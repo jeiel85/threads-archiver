@@ -3,7 +3,17 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type { ThreadArchive } from '@threads-archiver/core';
-import { EngineClient, EngineError, waitForEngine, type AppSettings, type EngineInfo, type Job } from './api';
+import {
+  EngineClient,
+  EngineError,
+  percentText,
+  reportDownloadStatus,
+  transferText,
+  waitForEngine,
+  type AppSettings,
+  type EngineInfo,
+  type Job,
+} from './api';
 
 type Phase = 'boot' | 'idle' | 'extracting' | 'preview' | 'downloading' | 'done';
 
@@ -96,6 +106,12 @@ export default function App() {
       if (timer) window.clearTimeout(timer);
     };
   }, [client, job?.id]);
+
+  // 창을 트레이로 내려도 진행을 볼 수 있게 트레이 툴팁에 알린다.
+  const downloadingJob = phase === 'downloading' ? job : null;
+  useEffect(() => {
+    reportDownloadStatus(downloadingJob);
+  }, [downloadingJob]);
 
   const handleExtract = useCallback(async () => {
     if (!client) return;
@@ -276,7 +292,7 @@ export default function App() {
         <div className="progress-card">
           <div className="progress-head">
             <strong>{job.message}</strong>
-            <span>{Math.round((job.progress ?? 0) * 100)}%</span>
+            <span>{[transferText(job), percentText(job)].filter(Boolean).join(' · ')}</span>
           </div>
           <div className="progress-track">
             <div className="progress-fill" style={{ width: `${Math.max(4, (job.progress ?? 0) * 100)}%` }} />
@@ -313,7 +329,7 @@ export default function App() {
 
       <footer className="footer">
         <span>개인 백업용 도구입니다. 저작권과 Threads 이용약관을 존중해 주세요.</span>
-        <span className="mono">v0.3.1</span>
+        <span className="mono">v0.4.0</span>
       </footer>
     </div>
   );

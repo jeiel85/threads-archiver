@@ -84,9 +84,11 @@ try {
   for (;;) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     ({ job } = await call(`/api/jobs/${jobId}`));
-    if (job.message !== lastMessage) {
-      lastMessage = job.message;
-      console.log(`  ${Math.round(job.progress * 100)}% ${job.message}`);
+    const transfer = job.transfer ? ` [${job.transfer.received}/${job.transfer.total ?? '?'} bytes]` : '';
+    const line = `${Math.round(job.progress * 100)}% ${job.message}${transfer}`;
+    if (line !== lastMessage) {
+      lastMessage = line;
+      console.log(`  ${line}`);
     }
     if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') break;
   }
