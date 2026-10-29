@@ -156,7 +156,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (url.pathname === '/api/health' && request.method === 'GET') {
-    sendJson(response, 200, { ok: true, version: '0.1.0' });
+    sendJson(response, 200, { ok: true, version: '0.2.0' });
     return;
   }
 
