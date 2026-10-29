@@ -1,0 +1,35 @@
+{
+  "name": "@threads-archiver/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Threads 게시물 추출·다운로드 엔진 (브라우저 기반)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "threads-archiver": "./dist/cli.js",
+    "threads-archiver-engine": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "node --watch --experimental-strip-types src/cli.ts",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "playwright": "^1.56.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

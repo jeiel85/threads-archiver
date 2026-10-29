@@ -1,0 +1,70 @@
+# Threads Archiver
+
+Threads 게시물 링크 하나로 사진·영상·글(작성자가 이어 쓴 연속 게시물 포함)을 내 컴퓨터에 저장하는 개인 백업용 데스크톱 앱입니다.
+
+![미리보기와 저장 완료 화면](docs/screenshot-done.png)
+
+## 구성
+
+| 경로 | 내용 |
+| --- | --- |
+| `packages/core` | 추출·다운로드 엔진. Playwright(Chromium)로 게시물 페이지를 열어 글과 미디어를 수집합니다. CLI와 로컬 HTTP 엔진 서버를 함께 제공합니다. |
+| `apps/desktop` | Tauri 2 + React 데스크톱 앱. 실행 시 `node`로 엔진 서버(`packages/core/dist/server.js`)를 띄우고, 무작위 토큰을 붙여 `127.0.0.1`로만 통신합니다. |
+| `scripts/install-browser.mjs` | Playwright용 Chromium 설치(최초 1회, 약 150MB) |
+| `scripts/smoke.mjs` | 실제 게시물로 엔진 → 미리보기 → 다운로드 전 과정을 확인하는 스모크 테스트 |
+
+## 요구 사항
+
+- Node.js 20.11 이상 (데스크톱 앱도 PATH의 `node`로 엔진을 실행합니다)
+- 데스크톱 앱 빌드 시 Rust 툴체인과 [Tauri 2 사전 요구 사항](https://tauri.app/start/prerequisites/)
+
+## 시작하기
+
+```bash
+npm install
+npm run setup:browser
+```
+
+### 데스크톱 앱 (개발 모드)
+
+```bash
+npm run tauri -w @threads-archiver/desktop -- dev
+```
+
+링크를 붙여 넣고 **미리보기**로 게시물·미디어 개수를 확인한 뒤 **다운로드**를 누르면 됩니다. 저장 폴더를 비워 두면 `<홈>\Downloads\Threads Archiver\<작성자>_<게시물ID>`에 저장됩니다.
+
+### CLI
+
+```bash
+npm run build -w @threads-archiver/core
+node packages/core/dist/cli.js "https://www.threads.com/@nasa/post/Decc755lYhC"
+```
+
+주요 옵션은 `-o <폴더>`, `--no-media`, `--no-markdown`, `--json`, `--headed`, `--login`입니다. 전체 목록은 `--help`로 확인하세요.
+로그인이 필요한 게시물은 `--login`으로 브라우저를 열어 로그인해 두면, 세션이 `%LOCALAPPDATA%\Threads Archiver\browser-profile`에 저장되어 이후 실행에 쓰입니다.
+
+## 저장 결과
+
+```
+<저장 폴더>/
+  01.jpg, 02.mp4, …   # 미디어 (게시물 순서대로 번호)
+  post.json           # 작성자·게시물·미디어 메타데이터 전체
+  post.md             # 사람이 읽기 좋은 Markdown 요약
+```
+
+## 개발
+
+```bash
+npm test            # core 단위 테스트 (vitest)
+npm run typecheck   # 전체 워크스페이스 타입 검사
+node scripts/smoke.mjs [threads-url] [outDir]   # 네트워크·Chromium 필요
+```
+
+## 현재 한계
+
+- 릴리스 설치본은 아직 없습니다. 엔진이 시스템 `node`와 Playwright Chromium에 의존하므로, 배포하려면 Node 런타임·엔진·브라우저를 함께 번들링하는 방식을 먼저 정해야 합니다.
+- Threads 페이지 구조가 바뀌면 추출이 깨질 수 있습니다. `scripts/smoke.mjs`로 주기적으로 확인하세요.
+
+## 주의
+
+개인 백업용 도구입니다. 저작권과 Threads 이용약관을 존중해 주세요.
