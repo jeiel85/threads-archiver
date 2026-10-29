@@ -12,6 +12,7 @@ export interface RawDomMedia {
   width?: number;
   height?: number;
   durationSec?: number;
+  previewUrl?: string;
 }
 
 export interface RawDomStats {
@@ -91,6 +92,23 @@ export function extractThreadsDom(): RawDomResult {
     return entries[0]!.url;
   };
 
+  /** 미리보기용: 320px 이상 중 가장 작은 후보 (없으면 가장 큰 것). */
+  const pickPreviewFromSrcset = (srcset: string | null): string | undefined => {
+    if (!srcset) return undefined;
+    const entries = srcset
+      .split(/,\s*(?=https?:)/)
+      .map((entry) => {
+        const parts = entry.trim().split(/\s+/);
+        const descriptor = parts[1] ?? '';
+        return { url: parts[0], width: descriptor.endsWith('w') ? Number(descriptor.slice(0, -1)) : 0 };
+      })
+      .filter((entry) => !!entry.url && entry.width > 0);
+
+    if (entries.length === 0) return undefined;
+    entries.sort((a, b) => a.width - b.width);
+    return (entries.find((entry) => entry.width >= 320) ?? entries[entries.length - 1]!).url;
+  };
+
   const toNumber = (value: string | null): number | undefined => {
     if (!value) return undefined;
     const n = Number(value);
@@ -140,10 +158,27 @@ export function extractThreadsDom(): RawDomResult {
     const videos: any[] = Array.from(container.querySelectorAll('video')).filter(
       (video: any) => !isInsideNestedPost(video, container),
     );
+    // 영상의 대표 이미지: poster 속성, 없으면 같은 게시물 안의 썸네일 <picture>.
+    const posterImages: any[] = Array.from(container.querySelectorAll('picture img')).filter((img: any) => {
+      if (isInsideNestedPost(img, container)) return false;
+      if (/profile picture|프로필 사진/i.test(String(img.getAttribute('alt') ?? ''))) return false;
+      const anchor = img.closest('a[href]');
+      return !(anchor && isAuthorAnchor(anchor));
+    });
+    let posterIndex = 0;
+
     for (const video of videos) {
       const src: string = video.currentSrc || video.src || video.querySelector('source')?.src || '';
       if (!src) continue;
+      const posterImg = posterImages[posterIndex++];
+      const poster: string | undefined =
+        video.poster ||
+        (posterImg
+          ? pickPreviewFromSrcset(posterImg.getAttribute('srcset')) ?? posterImg.currentSrc ?? posterImg.src
+          : undefined) ||
+        undefined;
       media.push({
+        previewUrl: poster,
         kind: 'video',
         url: src,
         width: toNumber(String(video.videoWidth || video.getAttribute('width') || '')),
@@ -175,7 +210,13 @@ export function extractThreadsDom(): RawDomResult {
         if (!url || seen.has(url)) continue;
         seen.add(url);
 
-        media.push({ kind: 'image', url, width, height });
+        media.push({
+          kind: 'image',
+          url,
+          width,
+          height,
+          previewUrl: pickPreviewFromSrcset(img.getAttribute('srcset')) ?? url,
+        });
       }
     }
 

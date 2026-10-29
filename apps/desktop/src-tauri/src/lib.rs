@@ -40,6 +40,32 @@ fn engine_info(state: State<'_, Arc<EngineState>>) -> EngineInfo {
         })
 }
 
+/// 저장 결과(아카이브 폴더, post.json, post.md)만 기본 앱으로 연다.
+/// 프런트엔드에 opener 경로 권한을 통째로 열어 주지 않기 위해 여기서 대상을 검사한다.
+#[tauri::command]
+fn open_archive_item(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let target = PathBuf::from(&path);
+    let allowed = if target.is_dir() {
+        target.join("post.json").is_file()
+    } else {
+        target.is_file()
+            && matches!(
+                target.file_name().and_then(|name| name.to_str()),
+                Some("post.json") | Some("post.md")
+            )
+    };
+
+    if !allowed {
+        return Err(format!("아카이브 폴더나 파일이 아니라서 열 수 없습니다: {path}"));
+    }
+
+    app.opener()
+        .open_path(path.clone(), None::<&str>)
+        .map_err(|error| format!("열지 못했습니다: {path} ({error})"))
+}
+
 fn set_info(state: &Arc<EngineState>, info: EngineInfo) {
     if let Ok(mut guard) = state.info.lock() {
         *guard = info;
@@ -229,7 +255,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(state.clone())
-        .invoke_handler(tauri::generate_handler![engine_info])
+        .invoke_handler(tauri::generate_handler![engine_info, open_archive_item])
         .setup(move |app| {
             let handle = app.handle().clone();
             let engine_state = Arc::clone(&setup_state);

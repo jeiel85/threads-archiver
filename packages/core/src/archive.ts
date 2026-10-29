@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { ThreadsSession, type SessionOptions } from './extract/session.js';
-import { defaultBaseDir, defaultFolderName, saveArchive } from './download.js';
+import { defaultBaseDir, defaultFolderName, resolveArchiveDir, saveArchive } from './download.js';
 import {
   ArchiveError,
   type ArchiveResult,
@@ -9,8 +9,8 @@ import {
 } from './types.js';
 
 export interface ArchiveThreadOptions extends SessionOptions {
-  /** 저장 폴더. 생략하면 <Downloads>/Threads Archiver/<작성자>_<게시물ID> */
-  outputDir?: string;
+  /** 상위 저장 폴더. 그 아래에 게시물별 하위 폴더를 만든다. 생략하면 <Downloads>/Threads Archiver */
+  baseDir?: string;
   includeMedia?: boolean;
   includeMarkdown?: boolean;
   timeoutMs?: number;
@@ -20,7 +20,9 @@ export interface ArchiveThreadOptions extends SessionOptions {
 
 export interface ExtractedThread {
   archive: ThreadArchive;
-  /** 기본 저장 폴더 (아직 생성되지 않음) */
+  /** 게시물별 하위 폴더 이름 */
+  folderName: string;
+  /** 예상 저장 폴더 (아직 생성되지 않음) */
   suggestedDir: string;
 }
 
@@ -29,9 +31,11 @@ export async function extractThread(input: string, options: ArchiveThreadOptions
   const session = new ThreadsSession(options);
   try {
     const archive = await session.extract(input, options.timeoutMs);
+    const folderName = defaultFolderName(archive);
     return {
       archive,
-      suggestedDir: path.join(options.outputDir ?? defaultBaseDir(), defaultFolderName(archive)),
+      folderName,
+      suggestedDir: path.join(options.baseDir ?? defaultBaseDir(), folderName),
     };
   } finally {
     await session.close();
@@ -46,8 +50,7 @@ export async function archiveThread(input: string, options: ArchiveThreadOptions
     const archive = await session.extract(input, options.timeoutMs);
     options.onProgress?.({ ratio: 0.3, message: '게시물을 읽었습니다. 저장을 시작합니다…' });
 
-    const outputDir =
-      options.outputDir ?? path.join(defaultBaseDir(), defaultFolderName(archive));
+    const outputDir = await resolveArchiveDir(options.baseDir ?? defaultBaseDir(), archive);
 
     return await saveArchive(session, archive, {
       outputDir,

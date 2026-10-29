@@ -128,7 +128,9 @@ export class ThreadsSession {
       await this.waitForPost(page, timeoutMs);
 
       const raw = (await page.evaluate(extractThreadsDom)) as RawDomResult;
-      return buildArchive(raw, parsed);
+      const archive = buildArchive(raw, parsed);
+      await captureVideoPreviews(this.requireContext(), archive);
+      return archive;
     } catch (error) {
       if (error instanceof ArchiveError) throw error;
       if (error instanceof Error && /Timeout/i.test(error.message)) {
@@ -172,6 +174,64 @@ export class ThreadsSession {
   ): Promise<{ body: Buffer; contentType: string | null }> {
     const context = this.requireContext();
     return fetchWithContext(context.request, url, referer);
+  }
+}
+
+const PREVIEW_SEEK_SEC = 1;
+const PREVIEW_WIDTH = 360;
+
+/**
+ * 포스터가 없는 영상은 앞부분 한 장면(약 1초, 짧은 영상은 10% 지점)을 작은 JPEG로 찍어
+ * previewUrl(data URL)에 넣는다. Threads 페이지에서 바로 찍으면 로그인 팝업·어두운 배경이 겹치므로
+ * 같은 브라우저 세션의 빈 페이지에 영상만 띄워 찍는다.
+ * 미리보기 썸네일은 부가 정보라서, 한 영상이 실패해도 추출 자체는 실패시키지 않고 그 영상만 건너뛴다.
+ */
+async function captureVideoPreviews(context: BrowserContext, archive: ThreadArchive): Promise<void> {
+  const targets = archive.posts.flatMap((post) => post.media).filter((m) => m.kind === 'video' && !m.previewUrl);
+  if (targets.length === 0) return;
+
+  const page = await context.newPage();
+  try {
+    await page.setViewportSize({ width: PREVIEW_WIDTH, height: 1200 });
+    for (const asset of targets) {
+      try {
+        await page.setContent(
+          `<body style="margin:0;background:#000"><video muted playsinline preload="auto" style="display:block;width:${PREVIEW_WIDTH}px"></video></body>`,
+        );
+        const ready = await page.evaluate(
+          ({ src, seekSec }) =>
+            new Promise<boolean>((resolve) => {
+              const video = document.querySelector('video')!;
+              const timer = setTimeout(() => resolve(false), 8_000);
+              const finish = (ok: boolean) => {
+                clearTimeout(timer);
+                resolve(ok);
+              };
+              video.addEventListener('error', () => finish(false), { once: true });
+              video.addEventListener(
+                'loadeddata',
+                () => {
+                  const target =
+                    Number.isFinite(video.duration) && video.duration > 0 ? Math.min(seekSec, video.duration * 0.1) : 0;
+                  video.addEventListener('seeked', () => finish(true), { once: true });
+                  video.currentTime = target;
+                },
+                { once: true },
+              );
+              video.src = src;
+            }),
+          { src: asset.url, seekSec: PREVIEW_SEEK_SEC },
+        );
+        if (!ready) continue;
+
+        const shot = await page.locator('video').screenshot({ type: 'jpeg', quality: 70, timeout: 5_000 });
+        asset.previewUrl = `data:image/jpeg;base64,${shot.toString('base64')}`;
+      } catch {
+        // 위 주석대로 이 영상은 미리보기 없이 진행한다. UI는 썸네일 대신 종류 표시만 보여 준다.
+      }
+    }
+  } finally {
+    await page.close().catch(() => undefined);
   }
 }
 
@@ -273,6 +333,7 @@ function normalizePost(raw: RawDomResult['posts'][number], owner: string): Threa
       width: item.width,
       height: item.height,
       durationSec: item.durationSec,
+      previewUrl: item.previewUrl,
     })),
     stats: raw.stats,
   };

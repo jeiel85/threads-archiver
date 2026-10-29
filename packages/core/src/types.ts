@@ -14,6 +14,8 @@ export interface MediaAsset {
   width?: number;
   height?: number;
   durationSec?: number;
+  /** 미리보기용 작은 이미지 URL (영상은 대표 썸네일). url과 마찬가지로 만료된다. */
+  previewUrl?: string;
   /** 다운로드 후 채워지는 저장 파일명 */
   fileName?: string;
   /** 다운로드 후 채워지는 바이트 수 */

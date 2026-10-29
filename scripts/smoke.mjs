@@ -2,7 +2,7 @@
 // 엔진 → 미리보기 → 다운로드 전체 경로를 실제 Threads 게시물로 확인하는 스모크 테스트.
 //
 //   node scripts/smoke.mjs                          # 기본 예시 게시물
-//   node scripts/smoke.mjs <threads-url> [outDir]   # 직접 지정
+//   node scripts/smoke.mjs <threads-url> [baseDir]  # 직접 지정 (baseDir 아래 게시물별 폴더에 저장)
 //
 // 네트워크와 Playwright 브라우저(Chromium)가 필요합니다.
 
@@ -76,7 +76,7 @@ try {
   await mkdir(outDir, { recursive: true });
   const { jobId } = await call('/api/jobs', {
     method: 'POST',
-    body: JSON.stringify({ url, outputDir: outDir }),
+    body: JSON.stringify({ url, baseDir: outDir }),
   });
 
   let job;

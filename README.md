@@ -31,7 +31,15 @@ npm run setup:browser
 npm run tauri -w @threads-archiver/desktop -- dev
 ```
 
-링크를 붙여 넣고 **미리보기**로 게시물·미디어 개수를 확인한 뒤 **다운로드**를 누르면 됩니다. 저장 폴더를 비워 두면 `<홈>\Downloads\Threads Archiver\<작성자>_<게시물ID>`에 저장됩니다.
+링크를 붙여 넣고 **미리보기**로 글과 미디어 썸네일을 확인한 뒤 **다운로드**를 누르면 됩니다. 저장 폴더(기본 `<홈>\Downloads\Threads Archiver`) 아래에 게시물마다 하위 폴더를 만들어 저장합니다.
+
+```
+Threads Archiver/
+  2026-10-14 @nasa - Spotted views of a space jellyfish…/
+  2026-10-13 @zuck - Introducing Muse Wonder, our new family…/
+```
+
+폴더 이름은 `<작성일> @<작성자> - <본문 첫 줄 요약>`이라 이름순 정렬이 곧 시간순입니다. 본문이 없으면 게시물 ID를 쓰고, 같은 이름의 다른 게시물이 있으면 ` (2)`처럼 번호를 붙입니다. 같은 게시물을 다시 받으면 기존 폴더를 덮어씁니다.
 
 ### CLI
 
@@ -40,13 +48,13 @@ npm run build -w @threads-archiver/core
 node packages/core/dist/cli.js "https://www.threads.com/@nasa/post/Decc755lYhC"
 ```
 
-주요 옵션은 `-o <폴더>`, `--no-media`, `--no-markdown`, `--json`, `--headed`, `--login`입니다. 전체 목록은 `--help`로 확인하세요.
+주요 옵션은 `-o <상위 폴더>`, `--no-media`, `--no-markdown`, `--json`, `--headed`, `--login`입니다. 전체 목록은 `--help`로 확인하세요.
 로그인이 필요한 게시물은 `--login`으로 브라우저를 열어 로그인해 두면, 세션이 `%LOCALAPPDATA%\Threads Archiver\browser-profile`에 저장되어 이후 실행에 쓰입니다.
 
 ## 저장 결과
 
 ```
-<저장 폴더>/
+<저장 폴더>/<작성일> @<작성자> - <요약>/
   01.jpg, 02.mp4, …   # 미디어 (게시물 순서대로 번호)
   post.json           # 작성자·게시물·미디어 메타데이터 전체
   post.md             # 사람이 읽기 좋은 Markdown 요약
@@ -57,8 +65,10 @@ node packages/core/dist/cli.js "https://www.threads.com/@nasa/post/Decc755lYhC"
 ```bash
 npm test            # core 단위 테스트 (vitest)
 npm run typecheck   # 전체 워크스페이스 타입 검사
-node scripts/smoke.mjs [threads-url] [outDir]   # 네트워크·Chromium 필요
+node scripts/smoke.mjs [threads-url] [baseDir]  # 네트워크·Chromium 필요
 ```
+
+미리보기 썸네일은 원본을 받지 않습니다. 이미지는 CDN이 제공하는 320px급 축소본을 쓰고, 영상은 추출에 쓴 브라우저에서 약 1초 지점 한 장면을 360px JPEG(수~수십 KB)로 찍습니다. 썸네일을 만들지 못한 미디어는 종류·해상도만 표시합니다. 영상 캡처는 `post.json`에 저장하지 않습니다.
 
 ## 현재 한계
 
