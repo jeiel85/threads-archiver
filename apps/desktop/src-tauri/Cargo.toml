@@ -1,6 +1,6 @@
 [package]
 name = "threads-archiver-desktop"
-version = "0.2.0"
+version = "0.3.0"
 description = "Threads 게시물을 내 컴퓨터에 아카이빙하는 데스크톱 앱"
 authors = ["jeiel85"]
 edition = "2024"
@@ -13,11 +13,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-clipboard-manager = "2"
 
 [profile.release]
 codegen-units = 1
@@ -25,3 +28,6 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62", features = ["Win32_System_DataExchange"] }

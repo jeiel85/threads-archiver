@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { ThreadsSession } from './extract/session.js';
@@ -28,6 +29,8 @@ interface Job {
   createdAt: number;
   finishedAt?: number;
   result?: ArchiveResult;
+  /** 같은 게시물을 이미 저장한 폴더가 있어 그 폴더에 다시 저장했는지 */
+  alreadySaved?: boolean;
   error?: { code: string; message: string; hint?: string };
 }
 
@@ -112,6 +115,11 @@ async function runJob(job: Job): Promise<void> {
     onProgress({ ratio: 0.3, message: '게시물을 읽었습니다. 저장을 시작합니다…' });
 
     const outputDir = await resolveArchiveDir(job.baseDir ?? defaultBaseDir(), archive);
+    // resolveArchiveDir는 같은 게시물의 post.json이 있을 때만 기존 폴더를 돌려준다.
+    job.alreadySaved = await stat(path.join(outputDir, 'post.json')).then(
+      () => true,
+      () => false,
+    );
 
     const result = await saveArchive(target, archive, {
       outputDir,
@@ -156,7 +164,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (url.pathname === '/api/health' && request.method === 'GET') {
-    sendJson(response, 200, { ok: true, version: '0.2.0' });
+    sendJson(response, 200, { ok: true, version: '0.3.0' });
     return;
   }
 

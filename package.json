@@ -1,7 +1,7 @@
 {
   "name": "threads-archiver",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Threads 공유 링크 하나로 사진·영상·글(연속 게시물 포함)을 내 컴퓨터에 아카이빙하는 데스크톱 앱",
   "workspaces": [
     "packages/*",

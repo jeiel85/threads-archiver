@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type { ThreadArchive } from '@threads-archiver/core';
-import { EngineClient, EngineError, waitForEngine, type EngineInfo, type Job } from './api';
+import { EngineClient, EngineError, waitForEngine, type AppSettings, type EngineInfo, type Job } from './api';
 
 type Phase = 'boot' | 'idle' | 'extracting' | 'preview' | 'downloading' | 'done';
 
@@ -247,6 +248,8 @@ export default function App() {
             </button>
           ) : null}
         </div>
+
+        <SettingsPanel onError={setError} />
       </section>
 
       {error ? (
@@ -310,8 +313,60 @@ export default function App() {
 
       <footer className="footer">
         <span>개인 백업용 도구입니다. 저작권과 Threads 이용약관을 존중해 주세요.</span>
-        <span className="mono">v0.2.0</span>
+        <span className="mono">v0.3.0</span>
       </footer>
+    </div>
+  );
+}
+
+function SettingsPanel({ onError }: { onError: (error: UiError) => void }) {
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+
+  useEffect(() => {
+    void invoke<AppSettings>('get_settings').then(setSettings);
+    // 트레이 메뉴에서 바꾼 값도 화면에 반영한다.
+    const unlisten = listen<AppSettings>('settings-changed', (event) => setSettings(event.payload));
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, []);
+
+  const change = useCallback(
+    async (command: 'set_clipboard_watch' | 'set_autostart', enabled: boolean) => {
+      try {
+        setSettings(await invoke<AppSettings>(command, { enabled }));
+      } catch (cause) {
+        onError({ code: 'SETTINGS_FAILED', message: String(cause) });
+      }
+    },
+    [onError],
+  );
+
+  if (!settings) return null;
+
+  return (
+    <div className="settings">
+      <label className="setting">
+        <input
+          type="checkbox"
+          checked={settings.clipboardWatch}
+          onChange={(event) => void change('set_clipboard_watch', event.target.checked)}
+        />
+        <span className="setting-title">클립보드 감시</span>
+        <span className="setting-desc">
+          Threads 링크를 복사하면 우측 하단 알림에서 바로 다운로드합니다. 갤럭시는 'Windows와 연결'의 클립보드
+          동기화를 켜면 폰에서 복사한 링크도 감지합니다. 클립보드 내용은 링크 여부만 확인하고 저장하지 않습니다.
+        </span>
+      </label>
+      <label className="setting">
+        <input
+          type="checkbox"
+          checked={settings.autostart}
+          onChange={(event) => void change('set_autostart', event.target.checked)}
+        />
+        <span className="setting-title">Windows 시작 시 트레이로 실행</span>
+        <span className="setting-desc">창을 닫아도 트레이에서 계속 실행됩니다. 완전히 끄려면 트레이 메뉴의 '종료'를 누르세요.</span>
+      </label>
     </div>
   );
 }
