@@ -3,6 +3,7 @@
 //! Windows 클립보드 변경 번호(GetClipboardSequenceNumber)만 주기적으로 비교하고,
 //! 번호가 바뀌었을 때만 내용을 읽는다. 내용은 Threads 링크인지 검사하는 데만 쓰고 저장·전송하지 않는다.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -20,10 +21,17 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 #[derive(Default)]
 pub struct WatchState {
     pub enabled: AtomicBool,
-    /// 이번 실행에서 이미 알린 링크. 같은 링크를 다시 복사해도 다시 띄우지 않는다.
-    last_url: Mutex<Option<String>>,
+    /// 이번 실행에서 이미 알린 링크들. A → B → A 순서로 복사해도 A를 다시 띄우지 않는다.
+    notified: Mutex<HashSet<String>>,
     /// 팝업 창이 처음 뜰 때 가져갈 링크 (이벤트보다 창 로딩이 늦을 수 있어서 따로 보관)
     pub current_url: Mutex<Option<String>>,
+}
+
+impl WatchState {
+    /// 처음 보는 링크면 기록하고 true, 이번 실행에서 이미 알린 링크면 false.
+    fn mark_notified(&self, url: &str) -> bool {
+        self.notified.lock().unwrap_or_else(|poison| poison.into_inner()).insert(url.to_string())
+    }
 }
 
 /// 클립보드 텍스트에서 Threads 게시물·공유 링크를 찾는다.
@@ -93,12 +101,8 @@ pub fn spawn(app: AppHandle, state: Arc<WatchState>) {
                 continue;
             };
 
-            {
-                let mut last = state.last_url.lock().unwrap_or_else(|poison| poison.into_inner());
-                if last.as_deref() == Some(url.as_str()) {
-                    continue;
-                }
-                *last = Some(url.clone());
+            if !state.mark_notified(&url) {
+                continue;
             }
 
             show_toast(&app, &state, url);
@@ -156,7 +160,15 @@ fn place_bottom_right(window: &tauri::WebviewWindow) {
 
 #[cfg(test)]
 mod tests {
-    use super::detect_threads_url;
+    use super::{detect_threads_url, WatchState};
+
+    #[test]
+    fn 이미_알린_링크는_다른_링크를_거쳐도_다시_알리지_않는다() {
+        let state = WatchState::default();
+        assert!(state.mark_notified("https://www.threads.com/@a/post/A"));
+        assert!(state.mark_notified("https://www.threads.com/@b/post/B"));
+        assert!(!state.mark_notified("https://www.threads.com/@a/post/A"));
+    }
 
     #[test]
     fn 게시물_링크를_찾는다() {

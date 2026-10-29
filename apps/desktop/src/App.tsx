@@ -313,7 +313,7 @@ export default function App() {
 
       <footer className="footer">
         <span>개인 백업용 도구입니다. 저작권과 Threads 이용약관을 존중해 주세요.</span>
-        <span className="mono">v0.3.0</span>
+        <span className="mono">v0.3.1</span>
       </footer>
     </div>
   );
