@@ -33,7 +33,10 @@ pub fn detect_threads_url(text: &str) -> Option<String> {
         return None;
     }
     text.split_whitespace().find_map(|token| {
-        let token = token.trim_matches(|c: char| matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']'));
+        // 따옴표·괄호로 감싼 링크와, 문장 끝 문장부호가 붙은 링크("…/post/abc.")도 받는다.
+        let token = token
+            .trim_start_matches(|c: char| matches!(c, '"' | '\'' | '<' | '(' | '['))
+            .trim_end_matches(|c: char| matches!(c, '"' | '\'' | '>' | ')' | ']' | '.' | ',' | '!' | '?' | ';' | ':'));
         let lower = token.to_ascii_lowercase();
         let rest = lower
             .strip_prefix("https://")
@@ -176,6 +179,18 @@ mod tests {
         assert_eq!(
             detect_threads_url("threads.com/@zuck/post/DeZtp-TkQHh").as_deref(),
             Some("https://threads.com/@zuck/post/DeZtp-TkQHh")
+        );
+    }
+
+    #[test]
+    fn 링크_끝의_문장부호와_괄호를_떼어낸다() {
+        assert_eq!(
+            detect_threads_url("이 글 좋다 https://www.threads.com/@zuck/post/DeZtp-TkQHh.").as_deref(),
+            Some("https://www.threads.com/@zuck/post/DeZtp-TkQHh")
+        );
+        assert_eq!(
+            detect_threads_url("(https://www.threads.com/share/FT-8R3j6Q/),").as_deref(),
+            Some("https://www.threads.com/share/FT-8R3j6Q/")
         );
     }
 
