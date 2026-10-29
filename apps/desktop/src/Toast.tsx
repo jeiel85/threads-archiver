@@ -23,6 +23,8 @@ export default function Toast() {
   const [hovered, setHovered] = useState(false);
   const client = useRef<EngineClient | null>(null);
   const runId = useRef(0);
+  /** 작업 요청을 보내는 동안 true. 같은 링크로 작업이 두 번 제출되지 않게 막는다. */
+  const submitting = useRef(false);
 
   useEffect(() => {
     document.body.classList.add('toast-body');
@@ -31,6 +33,7 @@ export default function Toast() {
     });
     const unlisten = listen<string>('toast-url', (event) => {
       runId.current += 1; // 진행 중이던 이전 링크의 결과는 버린다.
+      submitting.current = false;
       setUrl(event.payload);
       setState({ kind: 'detected' });
     });
@@ -53,17 +56,21 @@ export default function Toast() {
   }, [url, state.kind, hovered, hide]);
 
   const download = useCallback(async () => {
-    if (!url) return;
+    if (!url || submitting.current) return;
+    submitting.current = true;
     const run = ++runId.current;
     const update = (next: ToastState) => {
       if (run === runId.current) setState(next);
     };
+    // 엔진 시작·요청 전송이 느려도 버튼이 사라지고 자동 닫힘이 멈추도록 먼저 진행 상태로 바꾼다.
+    update({ kind: 'downloading', job: { id: '', status: 'queued', progress: 0, message: '요청 보내는 중…' } });
 
     try {
       client.current ??= new EngineClient(await waitForEngine());
       const engine = client.current;
       // 저장 위치는 엔진 기본값(다운로드\Threads Archiver) 아래 게시물별 폴더.
       const { jobId } = await engine.startArchive(url, '');
+      submitting.current = false;
       let job: Job = { id: jobId, status: 'queued', progress: 0, message: '대기 중…' };
       update({ kind: 'downloading', job });
 
@@ -78,6 +85,8 @@ export default function Toast() {
       else update({ kind: 'error', message: job.error?.message ?? job.message });
     } catch (cause) {
       update({ kind: 'error', message: cause instanceof EngineError || cause instanceof Error ? cause.message : String(cause) });
+    } finally {
+      submitting.current = false;
     }
   }, [url]);
 
