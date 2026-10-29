@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { openPath } from '@tauri-apps/plugin-opener';
+import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type { ThreadArchive } from '@threads-archiver/core';
 import { EngineClient, EngineError, waitForEngine, type EngineInfo, type Job } from './api';
@@ -8,6 +8,7 @@ type Phase = 'boot' | 'idle' | 'extracting' | 'preview' | 'downloading' | 'done'
 
 interface PreviewState {
   archive: ThreadArchive;
+  folderName: string;
   suggestedDir: string;
 }
 
@@ -111,7 +112,6 @@ export default function App() {
     try {
       const result = await client.extract(link);
       setPreview(result);
-      setOutputDir((current) => current || result.suggestedDir);
       setPhase('preview');
     } catch (cause) {
       setPhase('idle');
@@ -149,6 +149,14 @@ export default function App() {
         message: '클립보드 내용을 읽지 못했습니다.',
         hint: 'Ctrl+V로 직접 붙여넣어 주세요.',
       });
+    }
+  }, []);
+
+  const openArchiveItem = useCallback(async (path: string) => {
+    try {
+      await invoke('open_archive_item', { path });
+    } catch (cause) {
+      setError({ code: 'OPEN_FAILED', message: String(cause) });
     }
   }, []);
 
@@ -210,7 +218,7 @@ export default function App() {
             <input
               type="text"
               value={outputDir}
-              placeholder="비워 두면 다운로드 폴더 아래에 저장됩니다"
+              placeholder="비워 두면 다운로드\Threads Archiver 아래에 저장됩니다"
               spellCheck={false}
               onChange={(event) => setOutputDir(event.target.value)}
               disabled={busy}
@@ -288,10 +296,10 @@ export default function App() {
             <span>Markdown post.md</span>
           </div>
           <div className="result-actions">
-            <button type="button" className="secondary" onClick={() => void openPath(result.outputDir)}>
+            <button type="button" className="secondary" onClick={() => void openArchiveItem(result.outputDir)}>
               폴더 열기
             </button>
-            <button type="button" className="ghost" onClick={() => void openPath(result.manifestPath)}>
+            <button type="button" className="ghost" onClick={() => void openArchiveItem(result.manifestPath)}>
               post.json 열기
             </button>
           </div>
@@ -363,12 +371,9 @@ function ArchivePreview({ preview, outputDir }: { preview: PreviewState; outputD
               <div className="thread-meta">{formatDate(post.postedAt)}</div>
               {post.text ? <p className="thread-text">{post.text}</p> : <p className="thread-text muted">본문 없음</p>}
               {post.media.length > 0 ? (
-                <div className="chips">
+                <div className="thumbs">
                   {post.media.map((media, mediaIndex) => (
-                    <span key={`${media.url.slice(-24)}-${mediaIndex}`} className={`chip ${media.kind}`}>
-                      {media.kind === 'video' ? '영상' : '이미지'}
-                      {media.width && media.height ? ` · ${media.width}×${media.height}` : ''}
-                    </span>
+                    <MediaThumb key={`${media.url.slice(-24)}-${mediaIndex}`} media={media} />
                   ))}
                 </div>
               ) : null}
@@ -377,9 +382,54 @@ function ArchivePreview({ preview, outputDir }: { preview: PreviewState; outputD
         ))}
       </ol>
 
-      <p className="preview-note mono">저장 위치: {outputDir.trim() || preview.suggestedDir}</p>
+      <p className="preview-note mono">저장 위치: {archiveDir(outputDir, preview)}</p>
     </section>
   );
+}
+
+type Media = ThreadArchive['posts'][number]['media'][number];
+
+/** 미리보기 썸네일. 미리보기 URL이 없거나 불러오지 못하면 종류·해상도 칩으로 대신한다. */
+function MediaThumb({ media }: { media: Media }) {
+  const [failed, setFailed] = useState(false);
+  const label = media.kind === 'video' ? '영상' : '이미지';
+  const detail =
+    media.kind === 'video' && media.durationSec
+      ? formatDuration(media.durationSec)
+      : media.width && media.height
+        ? `${media.width}×${media.height}`
+        : '';
+
+  if (!media.previewUrl || failed) {
+    return (
+      <span className={`chip ${media.kind}`}>
+        {label}
+        {detail ? ` · ${detail}` : ''}
+      </span>
+    );
+  }
+
+  const ratio = media.width && media.height ? media.width / media.height : 1;
+  return (
+    <figure className={`thumb ${media.kind}`} style={{ aspectRatio: String(Math.min(Math.max(ratio, 0.56), 1.78)) }}>
+      <img src={media.previewUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+      <figcaption>
+        {media.kind === 'video' ? '▶ ' : ''}
+        {detail || label}
+      </figcaption>
+    </figure>
+  );
+}
+
+function formatDuration(seconds: number): string {
+  const total = Math.round(seconds);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+/** 상위 폴더 + 게시물별 하위 폴더. 같은 이름의 다른 게시물이 있으면 엔진이 번호를 붙인다. */
+function archiveDir(baseDir: string, preview: PreviewState): string {
+  const base = baseDir.trim().replace(/[\\/]+$/, '');
+  return base ? `${base}\\${preview.folderName}` : preview.suggestedDir;
 }
 
 function EmptyState({ onPick }: { onPick: (url: string) => void }) {

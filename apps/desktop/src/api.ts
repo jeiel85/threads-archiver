@@ -91,14 +91,15 @@ export class EngineClient {
     return this.request('/api/config');
   }
 
-  extract(url: string): Promise<{ archive: ThreadArchive; suggestedDir: string }> {
+  extract(url: string): Promise<{ archive: ThreadArchive; folderName: string; suggestedDir: string }> {
     return this.request('/api/extract', { method: 'POST', body: JSON.stringify({ url }) });
   }
 
-  startArchive(url: string, outputDir: string): Promise<{ jobId: string }> {
+  /** baseDir 아래에 게시물별 하위 폴더를 만들어 저장한다. */
+  startArchive(url: string, baseDir: string): Promise<{ jobId: string }> {
     return this.request('/api/jobs', {
       method: 'POST',
-      body: JSON.stringify({ url, outputDir: outputDir.trim() || undefined }),
+      body: JSON.stringify({ url, baseDir: baseDir.trim() || undefined }),
     });
   }
 

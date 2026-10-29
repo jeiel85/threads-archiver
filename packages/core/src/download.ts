@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { defaultBaseDir } from './paths.js';
 import {
@@ -30,14 +30,82 @@ const VIDEO_EXT: Record<string, string> = {
 /** 기본 저장 위치: <홈>/Downloads/Threads Archiver */
 export { defaultBaseDir };
 
+const SUMMARY_MAX = 40;
+
+/**
+ * 저장 폴더 이름: `<작성일> @<작성자> - <본문 요약>`.
+ * 날짜를 앞에 두어 탐색기에서 이름순 정렬이 곧 시간순이 되게 한다.
+ * 본문이 없으면 요약 대신 게시물 ID를 쓴다.
+ */
 export function defaultFolderName(archive: ThreadArchive): string {
   const root = archive.posts[0];
-  const code = root?.shortcode || 'thread';
-  return `${sanitize(archive.owner)}_${code}`;
+  const date = localDate(root?.postedAt ?? archive.extractedAt);
+  const summary = summarizeText(root?.text ?? '') || root?.shortcode || 'thread';
+  const name = [date, `@${archive.owner} - ${summary}`].filter(Boolean).join(' ');
+  return sanitize(name);
 }
 
+/**
+ * `baseDir` 아래에 이 아카이브를 저장할 하위 폴더를 정한다.
+ * 같은 이름의 폴더가 이미 있으면, 같은 게시물을 다시 받은 경우에만 그 폴더를 재사용하고
+ * 다른 게시물이면 ` (2)`, ` (3)`… 을 붙인다.
+ */
+export async function resolveArchiveDir(baseDir: string, archive: ThreadArchive): Promise<string> {
+  const name = defaultFolderName(archive);
+  const rootCode = archive.posts[0]?.shortcode;
+
+  for (let index = 1; ; index += 1) {
+    const candidate = path.resolve(baseDir, index === 1 ? name : `${name} (${index})`);
+    const existing = await stat(candidate).catch(() => null);
+    if (!existing) return candidate;
+    if (existing.isDirectory() && rootCode && (await archivedShortcode(candidate)) === rootCode) {
+      return candidate;
+    }
+  }
+}
+
+async function archivedShortcode(dir: string): Promise<string | undefined> {
+  try {
+    const saved = JSON.parse(await readFile(path.join(dir, 'post.json'), 'utf8')) as ThreadArchive;
+    return saved.posts?.[0]?.shortcode;
+  } catch {
+    // post.json이 없거나 깨진 폴더는 다른 게시물의 폴더로 본다.
+    return undefined;
+  }
+}
+
+function localDate(iso: string | undefined): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** 본문 첫 줄에서 링크를 빼고 단어 경계에 맞춰 짧게 자른다. */
+export function summarizeText(text: string): string {
+  const firstLine =
+    text
+      .split(/\r?\n/)
+      .map((line) => line.replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim())
+      .find((line) => line.length > 0) ?? '';
+
+  const chars = Array.from(firstLine);
+  if (chars.length <= SUMMARY_MAX) return firstLine;
+
+  const cut = chars.slice(0, SUMMARY_MAX).join('');
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace >= SUMMARY_MAX / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/** Windows 폴더명에 쓸 수 없는 문자 처리: 구분자 성격(/ \ |)은 공백으로, 나머지는 지운다. */
 function sanitize(value: string): string {
-  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 80) || 'threads';
+  const cleaned = value
+    .replace(/[/\\|]/g, ' ')
+    .replace(/[<>:"?*\u0000-\u001f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return Array.from(cleaned).slice(0, 80).join('').replace(/[. ]+$/g, '') || 'threads';
 }
 
 function extensionFor(asset: MediaAsset, contentType: string | null): string {
@@ -111,7 +179,13 @@ export async function saveArchive(
   }
 
   const manifestPath = path.join(outputDir, 'post.json');
-  await writeFile(manifestPath, `${JSON.stringify(archive, null, 2)}\n`, 'utf8');
+  // 영상 미리보기(data URL 캡처)는 화면 표시용이라 manifest에는 남기지 않는다.
+  const manifest = JSON.stringify(
+    archive,
+    (key, value: unknown) => (key === 'previewUrl' && typeof value === 'string' && value.startsWith('data:') ? undefined : value),
+    2,
+  );
+  await writeFile(manifestPath, `${manifest}\n`, 'utf8');
 
   let markdownPath: string | undefined;
   if (includeMarkdown) {

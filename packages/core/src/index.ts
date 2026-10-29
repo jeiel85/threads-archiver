@@ -1,6 +1,14 @@
 export { archiveThread, extractThread } from './archive.js';
 export type { ArchiveThreadOptions, ExtractedThread } from './archive.js';
-export { saveArchive, renderMarkdown, summarize, defaultBaseDir, defaultFolderName } from './download.js';
+export {
+  saveArchive,
+  renderMarkdown,
+  summarize,
+  summarizeText,
+  defaultBaseDir,
+  defaultFolderName,
+  resolveArchiveDir,
+} from './download.js';
 export { ThreadsSession } from './extract/session.js';
 export type { SessionOptions } from './extract/session.js';
 export { parseThreadsUrl } from './urls.js';

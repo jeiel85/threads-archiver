@@ -13,7 +13,8 @@ threads-archiver — Threads 게시물 아카이버
   threads-archiver <threads-게시물-링크> [옵션]
 
 옵션
-  -o, --out <폴더>    저장 폴더 (기본: ${defaultBaseDir()}\\<작성자>_<게시물ID>)
+  -o, --out <폴더>    상위 저장 폴더. 그 아래 '<작성일> @<작성자> - <요약>' 폴더에 저장
+                      (기본: ${defaultBaseDir()})
       --no-media      미디어 없이 글만 저장
       --no-markdown   Markdown 파일을 만들지 않음
       --json          결과를 JSON으로 출력
@@ -129,7 +130,7 @@ async function main(): Promise<void> {
 
   const result = await archiveThread(options.url, {
     ...sessionOptions,
-    outputDir: options.outputDir,
+    baseDir: options.outputDir,
     includeMedia: options.includeMedia,
     includeMarkdown: options.includeMarkdown,
     onProgress: isTty

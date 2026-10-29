@@ -1,14 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#8b7bff" />
+      <stop offset="0.55" stop-color="#a78bfa" />
       <stop offset="1" stop-color="#4ec8f5" />
     </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22" />
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="16" fill="url(#g)" />
-  <g fill="none" stroke="#0a0a12" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M32 14v26" />
-    <path d="M22 30l10 10 10-10" />
-    <path d="M16 46h32" />
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#bg)" />
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#shine)" />
+  <g fill="none" stroke="#0a0a12" stroke-linecap="round" stroke-linejoin="round" stroke-width="64">
+    <!-- 게시물을 잇는 실 -->
+    <path d="M512 212 V 636" />
+    <!-- 화살촉 -->
+    <path d="M412 540 L 512 640 L 612 540" />
+    <!-- 보관함 -->
+    <path d="M240 604 V 724 A 64 64 0 0 0 304 788 H 720 A 64 64 0 0 0 784 724 V 604" />
+  </g>
+  <!-- 이어진 게시물 -->
+  <g fill="#0a0a12">
+    <circle cx="512" cy="212" r="68" />
+    <circle cx="512" cy="392" r="68" />
+  </g>
+  <g fill="#f4f4f7">
+    <circle cx="512" cy="212" r="26" />
+    <circle cx="512" cy="392" r="26" />
   </g>
 </svg>

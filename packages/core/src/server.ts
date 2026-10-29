@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import { ThreadsSession } from './extract/session.js';
-import { saveArchive, defaultBaseDir, defaultFolderName } from './download.js';
+import { saveArchive, defaultBaseDir, defaultFolderName, resolveArchiveDir } from './download.js';
 import { defaultProfileDir } from './paths.js';
 import { ArchiveError, type ArchiveResult, type DownloadProgress, type ThreadArchive } from './types.js';
 
@@ -21,7 +21,8 @@ interface Job {
   id: string;
   status: JobStatus;
   url: string;
-  outputDir?: string;
+  /** 상위 저장 폴더. 게시물별 하위 폴더는 엔진이 정한다. */
+  baseDir?: string;
   progress: number;
   message: string;
   createdAt: number;
@@ -110,8 +111,7 @@ async function runJob(job: Job): Promise<void> {
     const archive: ThreadArchive = await target.extract(job.url);
     onProgress({ ratio: 0.3, message: '게시물을 읽었습니다. 저장을 시작합니다…' });
 
-    const outputDir =
-      job.outputDir ?? path.join(defaultBaseDir(), defaultFolderName(archive));
+    const outputDir = await resolveArchiveDir(job.baseDir ?? defaultBaseDir(), archive);
 
     const result = await saveArchive(target, archive, {
       outputDir,
@@ -176,9 +176,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const link = String(body.url ?? '');
     const target = getSession();
     const archive = await target.extract(link);
+    const folderName = defaultFolderName(archive);
     sendJson(response, 200, {
       archive,
-      suggestedDir: path.join(defaultBaseDir(), defaultFolderName(archive)),
+      folderName,
+      suggestedDir: path.join(defaultBaseDir(), folderName),
     });
     return;
   }
@@ -192,7 +194,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       id: randomBytes(8).toString('hex'),
       status: 'queued',
       url: link,
-      outputDir: typeof body.outputDir === 'string' && body.outputDir.trim() ? body.outputDir : undefined,
+      baseDir: typeof body.baseDir === 'string' && body.baseDir.trim() ? body.baseDir.trim() : undefined,
       progress: 0,
       message: '대기 중…',
       createdAt: Date.now(),
