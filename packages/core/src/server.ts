@@ -6,7 +6,7 @@ import process from 'node:process';
 import { ThreadsSession } from './extract/session.js';
 import { saveArchive, defaultBaseDir, defaultFolderName, resolveArchiveDir } from './download.js';
 import { defaultProfileDir } from './paths.js';
-import { ArchiveError, type ArchiveResult, type DownloadProgress, type ThreadArchive } from './types.js';
+import { ArchiveError, type ArchiveResult, type DownloadProgress, type ThreadArchive, type TransferProgress } from './types.js';
 
 /**
  * 데스크톱 앱이 사용하는 로컬 엔진.
@@ -26,6 +26,8 @@ interface Job {
   baseDir?: string;
   progress: number;
   message: string;
+  /** 미디어를 받는 중일 때만 있음 */
+  transfer?: TransferProgress;
   createdAt: number;
   finishedAt?: number;
   result?: ArchiveResult;
@@ -106,6 +108,7 @@ async function runJob(job: Job): Promise<void> {
   const onProgress = (progress: DownloadProgress) => {
     job.progress = progress.ratio;
     job.message = progress.message;
+    job.transfer = progress.transfer;
   };
 
   try {
@@ -164,7 +167,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (url.pathname === '/api/health' && request.method === 'GET') {
-    sendJson(response, 200, { ok: true, version: '0.3.1' });
+    sendJson(response, 200, { ok: true, version: '0.4.0' });
     return;
   }
 

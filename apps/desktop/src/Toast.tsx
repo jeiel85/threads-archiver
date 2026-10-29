@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { EngineClient, EngineError, waitForEngine, type Job } from './api';
+import { EngineClient, EngineError, percentText, reportDownloadStatus, transferText, waitForEngine, type Job } from './api';
 
 /**
  * 클립보드에서 Threads 링크를 감지했을 때 우측 하단에 뜨는 작은 창.
@@ -41,6 +41,12 @@ export default function Toast() {
       void unlisten.then((stop) => stop());
     };
   }, []);
+
+  // 알림 창을 닫아도 트레이 툴팁에서 진행을 보고, 트레이 아이콘 클릭으로 이 창을 다시 띄울 수 있게 알린다.
+  const downloadingJob = state.kind === 'downloading' ? state.job : null;
+  useEffect(() => {
+    reportDownloadStatus(downloadingJob);
+  }, [downloadingJob]);
 
   const hide = useCallback(() => {
     void invoke('hide_toast');
@@ -107,9 +113,22 @@ export default function Toast() {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <button type="button" className="toast-close" aria-label="닫기" onClick={hide}>
-        ×
-      </button>
+      {state.kind === 'downloading' ? (
+        // 받는 중에는 닫기(×) 대신 숨기기: 다운로드가 끊기지 않는다는 것을 모양으로도 알린다.
+        <button
+          type="button"
+          className="toast-close"
+          aria-label="숨기기"
+          title="숨기기 — 다운로드는 계속되고, 트레이 아이콘을 누르면 다시 보여요"
+          onClick={hide}
+        >
+          –
+        </button>
+      ) : (
+        <button type="button" className="toast-close" aria-label="닫기" onClick={hide}>
+          ×
+        </button>
+      )}
 
       {state.kind === 'detected' ? (
         <>
@@ -132,6 +151,10 @@ export default function Toast() {
           <div className="toast-url mono">{shortUrl(url)}</div>
           <div className="progress-track">
             <div className="progress-fill" style={{ width: `${Math.max(4, state.job.progress * 100)}%` }} />
+          </div>
+          <div className="toast-meta mono">
+            <span>{transferText(state.job) || '숨겨도 다운로드는 계속돼요'}</span>
+            <span>{percentText(state.job)}</span>
           </div>
         </>
       ) : null}

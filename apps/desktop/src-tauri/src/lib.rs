@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -251,6 +252,13 @@ const MENU_OPEN: &str = "open";
 const MENU_WATCH: &str = "watch";
 const MENU_QUIT: &str = "quit";
 
+const TRAY_ID: &str = "main";
+const TRAY_TOOLTIP: &str = "Threads Archiver";
+
+/// 진행 중인 다운로드의 한 줄 요약. 창 이름("main"·"toast")별로 하나씩, 트레이 툴팁에 함께 보여 준다.
+#[derive(Default)]
+struct DownloadStatus(Mutex<BTreeMap<String, String>>);
+
 /// 트레이 메뉴의 "클립보드 감시" 체크 항목. 화면에서 바꿔도 메뉴 체크가 따라가게 보관한다.
 struct TrayWatchItem(CheckMenuItem<tauri::Wry>);
 
@@ -308,6 +316,40 @@ fn hide_toast(app: tauri::AppHandle) {
     }
 }
 
+/// 창이 다운로드 진행을 알린다(`status`가 None이면 끝남). 트레이 툴팁에 반영한다.
+#[tauri::command]
+fn set_download_status(
+    window: tauri::WebviewWindow,
+    downloads: State<'_, DownloadStatus>,
+    status: Option<String>,
+) {
+    let tooltip = {
+        let mut map = downloads.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        match status {
+            Some(text) => map.insert(window.label().to_string(), text),
+            None => map.remove(window.label()),
+        };
+        std::iter::once(TRAY_TOOLTIP.to_string()).chain(map.values().cloned()).collect::<Vec<_>>().join("
+")
+    };
+    if let Some(tray) = window.app_handle().tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(tooltip));
+    }
+}
+
+/// 트레이 아이콘 클릭: 알림 창에서 받는 중이면 그 진행 창을 다시 띄우고, 아니면 메인 창을 연다.
+fn on_tray_click(app: &tauri::AppHandle) {
+    let toast_downloading = app
+        .try_state::<DownloadStatus>()
+        .is_some_and(|downloads| downloads.0.lock().is_ok_and(|map| map.contains_key(watcher::TOAST_LABEL)));
+    match app.get_webview_window(watcher::TOAST_LABEL) {
+        Some(toast) if toast_downloading => {
+            let _ = toast.show();
+        }
+        _ => show_main(app),
+    }
+}
+
 #[tauri::command]
 fn show_main_window(app: tauri::AppHandle) {
     show_main(&app);
@@ -342,8 +384,8 @@ fn build_tray(app: &tauri::App, watch_enabled: bool) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&open, &watch, &separator, &quit])?;
     app.manage(TrayWatchItem(watch));
 
-    let mut builder = TrayIconBuilder::with_id("main")
-        .tooltip("Threads Archiver")
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip(TRAY_TOOLTIP)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -366,7 +408,7 @@ fn build_tray(app: &tauri::App, watch_enabled: bool) -> tauri::Result<()> {
                 ..
             } = event
             {
-                show_main(tray.app_handle());
+                on_tray_click(tray.app_handle());
             }
         });
 
@@ -402,6 +444,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(state.clone())
         .manage(watch_state.clone())
+        .manage(DownloadStatus::default())
         .invoke_handler(tauri::generate_handler![
             engine_info,
             open_archive_item,
@@ -410,6 +453,7 @@ pub fn run() {
             set_autostart,
             current_toast_url,
             hide_toast,
+            set_download_status,
             show_main_window
         ])
         .on_window_event(|window, event| {

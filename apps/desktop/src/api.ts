@@ -13,6 +13,8 @@ export interface Job {
   status: 'queued' | 'running' | 'done' | 'error' | 'cancelled';
   progress: number;
   message: string;
+  /** 미디어를 받는 중일 때: 몇 번째 파일인지, 받은/전체 바이트 */
+  transfer?: { fileIndex: number; fileCount: number; received: number; total?: number };
   result?: {
     archive: ThreadArchive;
     outputDir: string;
@@ -23,6 +25,29 @@ export interface Job {
   error?: { code: string; message: string; hint?: string };
   /** 같은 게시물을 이미 저장한 폴더에 다시 저장했는지 */
   alreadySaved?: boolean;
+}
+
+/** `62%` */
+export function percentText(job: Job): string {
+  return `${Math.round((job.progress ?? 0) * 100)}%`;
+}
+
+/** 받는 중인 파일의 용량: `18.4 / 29.7MB` (전체 크기를 모르면 `18.4MB`). 받는 중이 아니면 빈 문자열. */
+export function transferText(job: Job): string {
+  const transfer = job.transfer;
+  if (!transfer) return '';
+  const received = toMegabytes(transfer.received);
+  return transfer.total ? `${received} / ${toMegabytes(transfer.total)}MB` : `${received}MB`;
+}
+
+function toMegabytes(bytes: number): string {
+  return (bytes / 1024 / 1024).toFixed(1);
+}
+
+/** 트레이 툴팁에 다운로드 진행을 알린다. `null`이면 끝남. */
+export function reportDownloadStatus(job: Job | null): void {
+  const status = job ? ['다운로드 중', percentText(job), transferText(job)].filter(Boolean).join(' ') : null;
+  void invoke('set_download_status', { status }).catch(() => undefined);
 }
 
 export interface AppSettings {

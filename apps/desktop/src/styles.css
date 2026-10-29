@@ -792,6 +792,14 @@ body.toast-body {
   text-overflow: ellipsis;
 }
 
+.toast-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
 .toast-actions {
   display: flex;
   gap: 8px;

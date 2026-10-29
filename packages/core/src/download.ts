@@ -5,6 +5,7 @@ import {
   ArchiveError,
   type ArchiveResult,
   type DownloadOptions,
+  type DownloadProgress,
   type DownloadedFile,
   type MediaAsset,
   type ThreadArchive,
@@ -124,6 +125,22 @@ function extensionFor(asset: MediaAsset, contentType: string | null): string {
   return asset.kind === 'video' ? 'mp4' : 'jpg';
 }
 
+/** 진행률 구간: 0 ~ SAVE_START는 게시물 읽기, SAVE_START ~ SAVE_END는 미디어 저장 */
+export const SAVE_START = 0.3;
+const SAVE_END = 0.98;
+const BYTES_REPORT_MS = 150;
+
+/** 바이트 진행 알림을 BYTES_REPORT_MS마다 한 번으로 줄인다. 시작(0)과 끝(받은 양 = 전체)은 항상 보낸다. */
+function throttle(callback: (received: number, total: number | undefined) => void) {
+  let last = 0;
+  return (received: number, total: number | undefined) => {
+    const now = Date.now();
+    if (received !== 0 && received !== total && now - last < BYTES_REPORT_MS) return;
+    last = now;
+    callback(received, total);
+  };
+}
+
 export interface SaveOptions extends DownloadOptions {
   /** 파일명 접두사 (기본: 순번) */
   prefix?: string;
@@ -149,9 +166,11 @@ export async function saveArchive(
   let done = 0;
   let counter = 0;
 
-  const report = (message: string, file?: string) => {
-    const ratio = total === 0 ? 0.5 : done / (total + 1);
-    options.onProgress?.({ ratio: Math.min(ratio, 0.95), message, file });
+  // 게시물 읽기까지가 SAVE_START, 저장 단계는 그 뒤부터 SAVE_END까지를 채운다.
+  // 파일마다 같은 몫을 주고, 받는 중인 파일은 받은 바이트 비율만큼 채운다.
+  const report = (message: string, fileFraction = 0, extra: Pick<DownloadProgress, 'file' | 'transfer'> = {}) => {
+    const saved = total === 0 ? 1 : (done + fileFraction) / total;
+    options.onProgress?.({ ratio: SAVE_START + (SAVE_END - SAVE_START) * Math.min(saved, 1), message, ...extra });
   };
 
   report('미디어를 내려받는 중…');
@@ -163,7 +182,14 @@ export async function saveArchive(
       }
 
       counter += 1;
-      const response = await session.downloadBuffer(asset.url);
+      const label = asset.kind === 'video' ? '영상' : '이미지';
+      const response = await session.downloadBuffer(asset.url, {
+        signal: options.signal,
+        onBytes: throttle((received, size) => {
+          const transfer = { fileIndex: counter, fileCount: total, received, total: size };
+          report(`${label} 내려받는 중… (${counter}/${total})`, size ? received / size : 0, { transfer });
+        }),
+      });
       const ext = extensionFor(asset, response.contentType);
       const fileName = `${String(counter).padStart(2, '0')}.${ext}`;
       const target = path.join(outputDir, fileName);
@@ -174,7 +200,7 @@ export async function saveArchive(
 
       files.push({ postShortcode: post.shortcode, kind: asset.kind, path: target, bytes: asset.bytes });
       done += 1;
-      report(`${fileName} 저장 완료`, target);
+      report(`${fileName} 저장 완료`, 0, { file: target });
     }
   }
 

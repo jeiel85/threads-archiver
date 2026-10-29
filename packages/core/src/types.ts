@@ -103,6 +103,17 @@ export interface DownloadProgress {
   ratio: number;
   message: string;
   file?: string;
+  /** 미디어를 받는 동안의 세부 진행 (몇 번째 파일, 받은/전체 바이트) */
+  transfer?: TransferProgress;
+}
+
+export interface TransferProgress {
+  /** 1부터 */
+  fileIndex: number;
+  fileCount: number;
+  received: number;
+  /** 서버가 크기를 알려 주지 않으면 없음 */
+  total?: number;
 }
 
 export interface DownloadOptions {

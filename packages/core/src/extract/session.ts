@@ -1,6 +1,5 @@
 ﻿import {
   chromium,
-  type APIRequestContext,
   type Browser,
   type BrowserContext,
   type Page,
@@ -167,15 +166,29 @@ export class ThreadsSession {
     }
   }
 
-  /** CDN 미디어를 내려받는다. 만료되는 서명 URL이므로 추출 직후 호출해야 한다. */
-  async downloadBuffer(
-    url: string,
-    referer = 'https://www.threads.com/',
-  ): Promise<{ body: Buffer; contentType: string | null }> {
+  /**
+   * CDN 미디어를 내려받는다. 만료되는 서명 URL이므로 추출 직후 호출해야 한다.
+   * 진행률을 알리기 위해 Playwright 요청(본문을 한 번에만 돌려줌) 대신 Node fetch로 스트리밍하고,
+   * 브라우저 세션과 같은 쿠키·User-Agent를 붙인다.
+   */
+  async downloadBuffer(url: string, options: MediaDownloadOptions = {}): Promise<{ body: Buffer; contentType: string | null }> {
     const context = this.requireContext();
-    return fetchWithContext(context.request, url, referer);
+    const cookies = await context.cookies(url);
+    return fetchStreaming(url, {
+      ...options,
+      cookie: cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; '),
+    });
   }
 }
+
+export interface MediaDownloadOptions {
+  referer?: string;
+  /** 받은 바이트 수와 전체 크기(Content-Length가 없으면 undefined) */
+  onBytes?: (received: number, total: number | undefined) => void;
+  signal?: AbortSignal;
+}
+
+const MEDIA_TIMEOUT_MS = 120_000;
 
 const PREVIEW_SEEK_SEC = 1;
 const PREVIEW_WIDTH = 360;
@@ -235,29 +248,66 @@ async function captureVideoPreviews(context: BrowserContext, archive: ThreadArch
   }
 }
 
-async function fetchWithContext(
-  request: APIRequestContext,
+async function fetchStreaming(
   url: string,
-  referer: string,
+  options: MediaDownloadOptions & { cookie: string },
 ): Promise<{ body: Buffer; contentType: string | null }> {
-  const response = await request.get(url, {
-    headers: { referer, accept: '*/*' },
-    timeout: 120_000,
-    failOnStatusCode: false,
-  });
+  const timeout = AbortSignal.timeout(MEDIA_TIMEOUT_MS);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  const headers: Record<string, string> = {
+    referer: options.referer ?? 'https://www.threads.com/',
+    accept: '*/*',
+    'user-agent': USER_AGENT,
+  };
+  if (options.cookie) headers.cookie = options.cookie;
 
-  if (!response.ok()) {
+  let response: Response;
+  try {
+    response = await fetch(url, { headers, signal });
+  } catch (error) {
+    throw downloadError(error, signal);
+  }
+
+  if (!response.ok || !response.body) {
     throw new ArchiveError(
       'DOWNLOAD_FAILED',
-      `미디어를 내려받지 못했습니다 (HTTP ${response.status()}).`,
+      `미디어를 내려받지 못했습니다 (HTTP ${response.status}).`,
       'CDN 주소는 몇 시간 뒤 만료됩니다. 링크를 다시 추출해 주세요.',
     );
   }
 
-  return {
-    body: Buffer.from(await response.body()),
-    contentType: response.headers()['content-type'] ?? null,
-  };
+  const length = Number(response.headers.get('content-length'));
+  const total = Number.isFinite(length) && length > 0 ? length : undefined;
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  options.onBytes?.(0, total);
+
+  const reader = response.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.byteLength;
+      options.onBytes?.(received, total);
+    }
+  } catch (error) {
+    throw downloadError(error, signal);
+  }
+
+  return { body: Buffer.concat(chunks), contentType: response.headers.get('content-type') };
+}
+
+function downloadError(error: unknown, signal: AbortSignal): ArchiveError {
+  if (signal.aborted && signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError') {
+    return new ArchiveError('DOWNLOAD_FAILED', '미디어를 내려받는 시간이 너무 오래 걸려 중단했습니다.', '네트워크 상태를 확인하고 다시 시도해 주세요.');
+  }
+  if (signal.aborted) return new ArchiveError('CANCELLED', '다운로드를 취소했습니다.');
+  return new ArchiveError(
+    'DOWNLOAD_FAILED',
+    `미디어를 내려받지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
+    '네트워크 상태를 확인하고 다시 시도해 주세요.',
+  );
 }
 
 function looksLikeLoginWall(text: string): boolean {

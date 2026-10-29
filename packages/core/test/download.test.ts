@@ -2,8 +2,9 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { defaultFolderName, renderMarkdown, resolveArchiveDir, summarizeText } from '../src/download.js';
-import type { ThreadArchive } from '../src/types.js';
+import { defaultFolderName, renderMarkdown, resolveArchiveDir, saveArchive, SAVE_START, summarizeText } from '../src/download.js';
+import type { MediaDownloadOptions, ThreadsSession } from '../src/extract/session.js';
+import type { DownloadProgress, ThreadArchive } from '../src/types.js';
 
 const archive: ThreadArchive = {
   sourceUrl: 'https://www.threads.com/@zuck/post/DeZtp-TkQHh',
@@ -124,5 +125,41 @@ describe('resolveArchiveDir', () => {
     await mkdir(first);
     await writeFile(path.join(first, 'post.json'), JSON.stringify(withRoot({ shortcode: 'OTHER' })));
     expect(await resolveArchiveDir(base, archive)).toBe(`${first} (2)`);
+  });
+});
+
+describe('saveArchive 진행률', () => {
+  let base: string;
+
+  beforeEach(async () => {
+    base = await mkdtemp(path.join(tmpdir(), 'threads-archiver-'));
+  });
+
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  it('받은 바이트만큼 진행률이 오르고 되돌아가지 않는다', async () => {
+    // 파일마다 4바이트를 1바이트씩 받는 가짜 세션
+    const session = {
+      async downloadBuffer(_url: string, options: MediaDownloadOptions = {}) {
+        for (let received = 0; received <= 4; received += 1) options.onBytes?.(received, 4);
+        return { body: Buffer.from('abcd'), contentType: null };
+      },
+    } as unknown as ThreadsSession;
+    const reports: DownloadProgress[] = [];
+
+    await saveArchive(session, structuredClone(archive), { outputDir: base, onProgress: (p) => reports.push(p) });
+
+    const ratios = reports.map((p) => p.ratio);
+    expect(ratios[0]).toBe(SAVE_START);
+    expect(ratios.at(-1)).toBe(1);
+    ratios.slice(1).forEach((ratio, index) => expect(ratio).toBeGreaterThanOrEqual(ratios[index]!));
+
+    const transfers = reports.flatMap((p) => (p.transfer ? [p.transfer] : []));
+    expect(transfers.at(-1)).toEqual({ fileIndex: 2, fileCount: 2, received: 4, total: 4 });
+    // 첫 파일을 다 받은 시점은 저장 구간의 절반
+    const halfway = reports.find((p) => p.transfer?.fileIndex === 1 && p.transfer.received === 4)!;
+    expect(halfway.ratio).toBeCloseTo(SAVE_START + (0.98 - SAVE_START) / 2);
   });
 });
