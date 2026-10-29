@@ -21,6 +21,13 @@ export interface Job {
     files: Array<{ kind: string; path: string; bytes: number }>;
   };
   error?: { code: string; message: string; hint?: string };
+  /** 같은 게시물을 이미 저장한 폴더에 다시 저장했는지 */
+  alreadySaved?: boolean;
+}
+
+export interface AppSettings {
+  clipboardWatch: boolean;
+  autostart: boolean;
 }
 
 export class EngineError extends Error {

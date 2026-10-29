@@ -1,11 +1,20 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, RunEvent, State};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_autostart::ManagerExt as _;
+
+mod settings;
+mod watcher;
+
+use watcher::WatchState;
 
 #[derive(Clone, Serialize)]
 struct EngineInfo {
@@ -237,6 +246,137 @@ fn rand_token() -> u128 {
     nanos.wrapping_mul(6364136223846793005).wrapping_add(pid << 32)
 }
 
+const MINIMIZED_ARG: &str = "--minimized";
+const MENU_OPEN: &str = "open";
+const MENU_WATCH: &str = "watch";
+const MENU_QUIT: &str = "quit";
+
+/// 트레이 메뉴의 "클립보드 감시" 체크 항목. 화면에서 바꿔도 메뉴 체크가 따라가게 보관한다.
+struct TrayWatchItem(CheckMenuItem<tauri::Wry>);
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsView {
+    clipboard_watch: bool,
+    autostart: bool,
+}
+
+fn settings_view(app: &tauri::AppHandle, watch: &WatchState) -> SettingsView {
+    SettingsView {
+        clipboard_watch: watch.enabled.load(Ordering::Relaxed),
+        autostart: app.autolaunch().is_enabled().unwrap_or(false),
+    }
+}
+
+#[tauri::command]
+fn get_settings(app: tauri::AppHandle, watch: State<'_, Arc<WatchState>>) -> SettingsView {
+    settings_view(&app, &watch)
+}
+
+#[tauri::command]
+fn set_clipboard_watch(
+    app: tauri::AppHandle,
+    watch: State<'_, Arc<WatchState>>,
+    enabled: bool,
+) -> Result<SettingsView, String> {
+    apply_clipboard_watch(&app, &watch, enabled)?;
+    Ok(settings_view(&app, &watch))
+}
+
+#[tauri::command]
+fn set_autostart(
+    app: tauri::AppHandle,
+    watch: State<'_, Arc<WatchState>>,
+    enabled: bool,
+) -> Result<SettingsView, String> {
+    let launcher = app.autolaunch();
+    let result = if enabled { launcher.enable() } else { launcher.disable() };
+    result.map_err(|error| format!("자동 실행 설정을 바꾸지 못했습니다: {error}"))?;
+    Ok(settings_view(&app, &watch))
+}
+
+/// 팝업 창이 처음 뜰 때 보여 줄 링크
+#[tauri::command]
+fn current_toast_url(watch: State<'_, Arc<WatchState>>) -> Option<String> {
+    watch.current_url.lock().ok().and_then(|url| url.clone())
+}
+
+#[tauri::command]
+fn hide_toast(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(watcher::TOAST_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) {
+    show_main(&app);
+}
+
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn apply_clipboard_watch(app: &tauri::AppHandle, watch: &WatchState, enabled: bool) -> Result<(), String> {
+    let mut current = settings::load(app);
+    current.clipboard_watch = enabled;
+    settings::save(app, &current)?;
+    watch.enabled.store(enabled, Ordering::Relaxed);
+
+    if let Some(item) = app.try_state::<TrayWatchItem>() {
+        let _ = item.0.set_checked(enabled);
+    }
+    let _ = app.emit("settings-changed", settings_view(app, watch));
+    Ok(())
+}
+
+fn build_tray(app: &tauri::App, watch_enabled: bool) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, MENU_OPEN, "열기", true, None::<&str>)?;
+    let watch = CheckMenuItem::with_id(app, MENU_WATCH, "클립보드 감시", true, watch_enabled, None::<&str>)?;
+    let quit = MenuItem::with_id(app, MENU_QUIT, "종료", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&open, &watch, &separator, &quit])?;
+    app.manage(TrayWatchItem(watch));
+
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("Threads Archiver")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            MENU_OPEN => show_main(app),
+            MENU_WATCH => {
+                if let Some(watch) = app.try_state::<Arc<WatchState>>() {
+                    let next = !watch.enabled.load(Ordering::Relaxed);
+                    if let Err(error) = apply_clipboard_watch(app, &watch, next) {
+                        eprintln!("{error}");
+                    }
+                }
+            }
+            MENU_QUIT => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = Arc::new(EngineState {
@@ -248,18 +388,53 @@ pub fn run() {
         }),
         child: Mutex::new(None),
     });
+    let watch_state = Arc::new(WatchState::default());
 
     let setup_state = Arc::clone(&state);
+    let setup_watch = Arc::clone(&watch_state);
 
     let app = tauri::Builder::default()
+        // 이미 떠 있으면(트레이 포함) 두 번째 실행 대신 기존 창을 연다. 엔진·클립보드 감시가 중복되지 않게 한다.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_autostart::Builder::new().args([MINIMIZED_ARG]).build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(state.clone())
-        .invoke_handler(tauri::generate_handler![engine_info, open_archive_item])
+        .manage(watch_state.clone())
+        .invoke_handler(tauri::generate_handler![
+            engine_info,
+            open_archive_item,
+            get_settings,
+            set_clipboard_watch,
+            set_autostart,
+            current_toast_url,
+            hide_toast,
+            show_main_window
+        ])
+        .on_window_event(|window, event| {
+            // 메인 창의 닫기(X)는 종료가 아니라 트레이로 숨기기. 종료는 트레이 메뉴에서 한다.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(move |app| {
             let handle = app.handle().clone();
             let engine_state = Arc::clone(&setup_state);
             thread::spawn(move || start_engine(handle, engine_state));
+
+            let saved = settings::load(app.handle());
+            setup_watch.enabled.store(saved.clipboard_watch, Ordering::Relaxed);
+            build_tray(app, saved.clipboard_watch)?;
+            watcher::spawn(app.handle().clone(), Arc::clone(&setup_watch));
+
+            // 자동 실행(--minimized)일 때는 트레이에만 둔다.
+            if !std::env::args().any(|arg| arg == MINIMIZED_ARG) {
+                show_main(app.handle());
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
