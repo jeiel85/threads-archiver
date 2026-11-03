@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type { ThreadArchive } from '@threads-archiver/core';
@@ -329,7 +330,7 @@ export default function App() {
 
       <footer className="footer">
         <span>개인 백업용 도구입니다. 저작권과 Threads 이용약관을 존중해 주세요.</span>
-        <span className="mono">v0.4.0</span>
+        <UpdateStatus busy={phase === 'downloading'} />
       </footer>
     </div>
   );
@@ -385,6 +386,112 @@ function SettingsPanel({ onError }: { onError: (error: UiError) => void }) {
       </label>
     </div>
   );
+}
+
+interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  notes?: string | null;
+}
+
+type UpdateState =
+  | { kind: 'idle' | 'checking' | 'latest' }
+  | { kind: 'available'; info: UpdateInfo }
+  | { kind: 'installing'; info: UpdateInfo; received: number; total?: number | null }
+  | { kind: 'error'; message: string };
+
+/**
+ * 시작할 때 GitHub 최신 릴리스를 한 번 확인하고, 새 버전이 있으면 업데이트 버튼을 보여 준다.
+ * 자동 확인 실패(오프라인 등)는 조용히 넘기고, 직접 누른 확인의 실패만 표시한다.
+ */
+function UpdateStatus({ busy: mainBusy }: { busy: boolean }) {
+  const [version, setVersion] = useState('');
+  const [state, setState] = useState<UpdateState>({ kind: 'idle' });
+  // 알림 창에서 시작한 다운로드도 포함한 앱 전체의 다운로드 여부
+  const [downloading, setDownloading] = useState(false);
+  const busy = mainBusy || downloading;
+
+  const check = useCallback(async (manual: boolean) => {
+    setState({ kind: 'checking' });
+    try {
+      const info = await invoke<UpdateInfo | null>('check_update');
+      setState(info ? { kind: 'available', info } : { kind: manual ? 'latest' : 'idle' });
+    } catch (cause) {
+      setState(manual ? { kind: 'error', message: String(cause) } : { kind: 'idle' });
+    }
+  }, []);
+
+  useEffect(() => {
+    void getVersion().then(setVersion);
+    void check(false);
+    const unlisten = listen<{ received: number; total?: number | null }>('update-progress', (event) =>
+      setState((current) =>
+        current.kind === 'installing' ? { ...current, ...event.payload } : current,
+      ),
+    );
+    const unlistenDownloads = listen<boolean>('downloads-active', (event) => setDownloading(event.payload));
+    return () => {
+      void unlisten.then((stop) => stop());
+      void unlistenDownloads.then((stop) => stop());
+    };
+  }, [check]);
+
+  const install = useCallback(async (info: UpdateInfo) => {
+    setState({ kind: 'installing', info, received: 0 });
+    try {
+      // 성공하면 설치 프로그램이 뜨고 앱이 종료된다.
+      await invoke('install_update');
+    } catch (cause) {
+      setState({ kind: 'error', message: String(cause) });
+    }
+  }, []);
+
+  const current = <span className="mono">{version ? `v${version}` : ''}</span>;
+
+  switch (state.kind) {
+    case 'available':
+      return (
+        <span className="update">
+          {current}
+          <span className="update-new">새 버전 v{state.info.version}</span>
+          <button
+            type="button"
+            className="link update-action"
+            disabled={busy}
+            title={busy ? '다운로드가 끝난 뒤에 업데이트할 수 있습니다.' : undefined}
+            onClick={() => void install(state.info)}
+          >
+            업데이트
+          </button>
+        </span>
+      );
+    case 'installing': {
+      const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+      const amount = state.total ? `${mb(state.received)} / ${mb(state.total)}MB` : `${mb(state.received)}MB`;
+      return (
+        <span className="update">
+          {current}
+          <span className="update-new">v{state.info.version} 받는 중 {amount}</span>
+        </span>
+      );
+    }
+    default:
+      return (
+        <span className="update">
+          {state.kind === 'error' ? <span className="update-error" title={state.message}>{state.message}</span> : null}
+          {state.kind === 'latest' ? <span>최신 버전입니다</span> : null}
+          {current}
+          <button
+            type="button"
+            className="link update-action"
+            disabled={state.kind === 'checking'}
+            onClick={() => void check(true)}
+          >
+            {state.kind === 'checking' ? '확인 중…' : '업데이트 확인'}
+          </button>
+        </span>
+      );
+  }
 }
 
 function EngineBadge({ engine, phase }: { engine: EngineInfo | null; phase: Phase }) {

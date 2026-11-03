@@ -82,12 +82,22 @@ fn set_info(state: &Arc<EngineState>, info: EngineInfo) {
     }
 }
 
+/// canonicalize()와 resource_dir()은 Windows에서 `\\?\` 접두사가 붙은 경로를 돌려준다.
+/// Node.js는 이 형식을 스크립트 경로로 해석하지 못하므로 일반 경로로 되돌린다.
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy().to_string();
+    match text.strip_prefix(r"\\?\") {
+        Some(stripped) => PathBuf::from(stripped),
+        None => path,
+    }
+}
+
 /// 엔진 스크립트 위치: 패키지에 동봉된 리소스 → 개발용 저장소 경로 순으로 찾는다.
 fn resolve_engine_script(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled = resource_dir.join("engine").join("server.js");
         if bundled.exists() {
-            return Ok(bundled);
+            return Ok(strip_verbatim(bundled));
         }
     }
 
@@ -101,20 +111,25 @@ fn resolve_engine_script(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("server.js");
 
     if dev_path.exists() {
-        let resolved = dev_path.canonicalize().unwrap_or(dev_path);
-        // canonicalize()는 Windows에서 `\\?\` 접두사가 붙은 경로를 돌려준다.
-        // Node.js는 이 형식을 스크립트 경로로 해석하지 못하므로 일반 경로로 되돌린다.
-        let text = resolved.to_string_lossy().to_string();
-        return Ok(match text.strip_prefix(r"\\?\") {
-            Some(stripped) => PathBuf::from(stripped),
-            None => resolved,
-        });
+        return Ok(strip_verbatim(dev_path.canonicalize().unwrap_or(dev_path)));
     }
 
     Err(format!(
         "엔진을 찾지 못했습니다: {} (먼저 `npm run build`를 실행하세요)",
         dev_path.display()
     ))
+}
+
+/// Node 실행 파일: 설치본에 동봉된 `node/node.exe` → PATH의 `node` 순으로 쓴다.
+fn resolve_node(app: &tauri::AppHandle) -> PathBuf {
+    let file = if cfg!(windows) { "node.exe" } else { "node" };
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled = resource_dir.join("node").join(file);
+        if bundled.exists() {
+            return strip_verbatim(bundled);
+        }
+    }
+    PathBuf::from("node")
 }
 
 fn start_engine(app: tauri::AppHandle, state: Arc<EngineState>) {
@@ -135,7 +150,7 @@ fn start_engine(app: tauri::AppHandle, state: Arc<EngineState>) {
     };
 
     let token = format!("{:x}", rand_token());
-    let mut command = Command::new("node");
+    let mut command = Command::new(resolve_node(&app));
     command
         .arg(&script)
         .env("THREADS_ARCHIVER_TOKEN", &token)
@@ -247,6 +262,92 @@ fn rand_token() -> u128 {
     nanos.wrapping_mul(6364136223846793005).wrapping_add(pid << 32)
 }
 
+fn stop_engine(state: &EngineState) {
+    if let Ok(mut guard) = state.child.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInfo {
+    version: String,
+    current_version: String,
+    notes: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct UpdateProgress {
+    received: u64,
+    total: Option<u64>,
+}
+
+/// GitHub 최신 릴리스의 latest.json을 확인한다. 새 버전이 없으면 None.
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let update = app
+        .updater()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| format!("업데이트를 확인하지 못했습니다: {error}"))?;
+
+    Ok(update.map(|update| UpdateInfo {
+        version: update.version,
+        current_version: update.current_version,
+        notes: update.body,
+    }))
+}
+
+/// 새 버전을 받아 서명을 검증한 뒤 설치한다. Windows에서는 설치 프로그램을 띄우고 앱이 종료되며,
+/// 설치가 끝나면 설치 프로그램이 앱을 다시 실행한다.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle, state: State<'_, Arc<EngineState>>) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    if downloads_active(&app) {
+        return Err("다운로드가 진행 중입니다. 끝난 뒤에 업데이트해 주세요.".into());
+    }
+
+    // 설치 프로그램이 동봉 node.exe를 덮어써야 하므로 앱이 종료되기 직전에 엔진을 먼저 끈다.
+    let engine = Arc::clone(&state);
+    let update = app
+        .updater_builder()
+        .on_before_exit(move || stop_engine(&engine))
+        .build()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| format!("업데이트를 확인하지 못했습니다: {error}"))?
+        .ok_or_else(|| "이미 최신 버전입니다.".to_string())?;
+
+    let mut received: u64 = 0;
+    let bytes = update
+        .download(
+            |chunk, total| {
+                received += chunk as u64;
+                let _ = app.emit("update-progress", UpdateProgress { received, total });
+            },
+            || {},
+        )
+        .await
+        .map_err(|error| format!("업데이트를 내려받지 못했습니다: {error}"))?;
+
+    // 받는 동안 알림 창에서 새 다운로드가 시작됐으면 끊지 않도록 설치를 미룬다.
+    if downloads_active(&app) {
+        return Err("업데이트를 받는 동안 다운로드가 시작돼 설치를 미뤘습니다. 다운로드가 끝난 뒤 다시 눌러 주세요.".into());
+    }
+
+    update
+        .install(bytes)
+        .map_err(|error| format!("업데이트를 설치하지 못했습니다: {error}"))
+}
+
 const MINIMIZED_ARG: &str = "--minimized";
 const MENU_OPEN: &str = "open";
 const MENU_WATCH: &str = "watch";
@@ -323,18 +424,27 @@ fn set_download_status(
     downloads: State<'_, DownloadStatus>,
     status: Option<String>,
 ) {
-    let tooltip = {
+    let (tooltip, active) = {
         let mut map = downloads.0.lock().unwrap_or_else(|poison| poison.into_inner());
         match status {
             Some(text) => map.insert(window.label().to_string(), text),
             None => map.remove(window.label()),
         };
-        std::iter::once(TRAY_TOOLTIP.to_string()).chain(map.values().cloned()).collect::<Vec<_>>().join("
-")
+        let tooltip = std::iter::once(TRAY_TOOLTIP.to_string()).chain(map.values().cloned()).collect::<Vec<_>>().join("
+");
+        (tooltip, !map.is_empty())
     };
     if let Some(tray) = window.app_handle().tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(tooltip));
     }
+    // 어느 창에서든 받는 중이면 메인 창의 업데이트 버튼을 막는다.
+    let _ = window.app_handle().emit("downloads-active", active);
+}
+
+/// 메인 창·알림 창 중 하나라도 다운로드 중인지. 업데이트 설치는 엔진을 끄므로 이때는 막는다.
+fn downloads_active(app: &tauri::AppHandle) -> bool {
+    app.try_state::<DownloadStatus>()
+        .is_some_and(|downloads| downloads.0.lock().is_ok_and(|map| !map.is_empty()))
 }
 
 /// 트레이 아이콘 클릭: 알림 창에서 받는 중이면 그 진행 창을 다시 띄우고, 아니면 메인 창을 연다.
@@ -442,6 +552,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state.clone())
         .manage(watch_state.clone())
         .manage(DownloadStatus::default())
@@ -454,7 +565,9 @@ pub fn run() {
             current_toast_url,
             hide_toast,
             set_download_status,
-            show_main_window
+            show_main_window,
+            check_update,
+            install_update
         ])
         .on_window_event(|window, event| {
             // 메인 창의 닫기(X)는 종료가 아니라 트레이로 숨기기. 종료는 트레이 메뉴에서 한다.
@@ -486,11 +599,7 @@ pub fn run() {
 
     app.run(move |_app_handle, event| {
         if let RunEvent::Exit = event {
-            if let Ok(mut guard) = state.child.lock() {
-                if let Some(child) = guard.as_mut() {
-                    let _ = child.kill();
-                }
-            }
+            stop_engine(&state);
         }
     });
 }
