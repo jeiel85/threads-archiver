@@ -892,6 +892,26 @@ a:focus-visible {
   font-size: 13.5px;
 }
 
+.history-head-side {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.history-clear {
+  padding: 0;
+  font-size: 12px;
+}
+
+.history-clear.confirm {
+  color: var(--danger);
+}
+
+.history-actions .history-delete {
+  padding: 6px 9px;
+  line-height: 1;
+}
+
 .history-head span,
 .history-empty {
   color: var(--muted-dim);

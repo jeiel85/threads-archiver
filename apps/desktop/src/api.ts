@@ -171,6 +171,16 @@ export class EngineClient {
     return job;
   }
 
+  /** 끝난 작업 하나를 내역에서 지운다. 저장된 파일은 그대로 둔다. */
+  deleteJob(id: string): Promise<{ removed: number }> {
+    return this.request(`/api/jobs/${id}/delete`, { method: 'POST' });
+  }
+
+  /** 끝난 작업을 모두 내역에서 지운다. 받는 중인 작업과 저장된 파일은 그대로 둔다. */
+  clearHistory(): Promise<{ removed: number }> {
+    return this.request('/api/jobs/clear', { method: 'POST' });
+  }
+
   /** Threads 로그인 창을 띄운다. 바로 돌아오고, 진행은 loginStatus()로 확인한다. */
   login(): Promise<LoginStatus> {
     return this.request('/api/login', { method: 'POST' });

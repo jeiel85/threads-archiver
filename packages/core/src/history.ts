@@ -71,6 +71,11 @@ export function trimHistory(jobs: EngineJob[], limit = HISTORY_LIMIT): EngineJob
   });
 }
 
+/** 내역 비우기에서 지울 작업: 끝난 것(완료·실패·취소)만. 받는 중·대기 중인 작업은 남긴다. */
+export function finishedIds(jobs: Iterable<EngineJob>): string[] {
+  return [...jobs].filter((job) => job.status !== 'queued' && job.status !== 'running').map((job) => job.id);
+}
+
 /**
  * 내역 파일을 읽는다. 없거나 깨졌으면 빈 내역으로 시작한다.
  * 앱이 꺼질 때 대기·진행 중이던 작업은 중단된 것으로 바꿔 다시 받을 수 있게 한다.
