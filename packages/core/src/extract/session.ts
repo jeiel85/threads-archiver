@@ -4,6 +4,8 @@
   type BrowserContext,
   type Page,
 } from 'playwright';
+import { existsSync } from 'node:fs';
+import process from 'node:process';
 import { ArchiveError, type ThreadArchive, type ThreadsPost } from '../types.js';
 import { extractThreadsDom, type RawDomResult } from '../dom/extractPage.js';
 import { parseThreadsUrl, isShortShareLink, type ParsedThreadsUrl } from '../urls.js';
@@ -11,6 +13,26 @@ import { parseThreadsUrl, isShortShareLink, type ParsedThreadsUrl } from '../url
 const DEFAULT_TIMEOUT_MS = 45_000;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+/**
+ * Playwright용 Chromium이 설치돼 있으면 그것을, 없으면 시스템 브라우저 채널을 쓴다.
+ * 설치본은 Chromium(약 150MB)을 동봉하지 않으므로 Windows에 기본 탑재된 Edge로 동작한다.
+ * `THREADS_ARCHIVER_BROWSER_CHANNEL`(msedge, chrome 등)로 강제할 수 있다.
+ */
+export function resolveBrowserChannel(): string | undefined {
+  const forced = process.env.THREADS_ARCHIVER_BROWSER_CHANNEL?.trim();
+  if (forced) return forced;
+  if (existsSync(chromium.executablePath())) return undefined;
+  return process.platform === 'win32' ? 'msedge' : 'chrome';
+}
+
+function launchFailed(error: unknown, channel: string | undefined): never {
+  const detail = error instanceof Error ? error.message.split('\n')[0] : String(error);
+  const hint = channel
+    ? `${channel === 'msedge' ? 'Microsoft Edge' : channel} 브라우저가 설치돼 있는지 확인하세요. 소스에서 실행 중이면 \`npm run setup:browser\`로 Chromium을 설치해도 됩니다.`
+    : '`npm run setup:browser`로 Chromium을 다시 설치하세요.';
+  throw new ArchiveError('EXTRACTION_FAILED', `브라우저를 실행하지 못했습니다: ${detail}`, hint);
+}
 
 export interface SessionOptions {
   /** 쿠키/로그인 세션을 보관할 디렉터리 (지정 시 재사용) */
@@ -47,15 +69,22 @@ export class ThreadsSession {
       deviceScaleFactor: 1,
     };
 
-    if (this.options.profileDir) {
-      this.context = await chromium.launchPersistentContext(this.options.profileDir, {
-        ...contextOptions,
-        headless,
-      });
-      return;
-    }
+    const channel = resolveBrowserChannel();
 
-    this.browser = await chromium.launch({ headless });
+    try {
+      if (this.options.profileDir) {
+        this.context = await chromium.launchPersistentContext(this.options.profileDir, {
+          ...contextOptions,
+          headless,
+          channel,
+        });
+        return;
+      }
+
+      this.browser = await chromium.launch({ headless, channel });
+    } catch (error) {
+      launchFailed(error, channel);
+    }
     this.context = await this.browser.newContext(contextOptions);
   }
 

@@ -18,3 +18,5 @@ coverage/
 downloads/
 *.local
 .tmp/
+.keystore/
+release-assets/

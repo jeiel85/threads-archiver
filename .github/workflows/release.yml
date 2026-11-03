@@ -1,0 +1,50 @@
+name: Release
+
+# v* 태그를 올리면 Windows 설치본(NSIS)과 자동 업데이트 매니페스트(latest.json)를 만들어
+# 같은 이름의 GitHub 릴리스에 첨부한다. 설치된 앱은 releases/latest/download/latest.json을 확인한다.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 설치본을 첨부할 기존 태그 (예 v0.5.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      # 이 Node가 설치본에 그대로 동봉된다 (scripts/stage-bundle.mjs).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: npm ci
+      - run: npm test
+      # 자동 업데이트용 서명(.sig)을 함께 만든다. 키는 저장소 Secret에 있다.
+      - run: npm run bundle -- --config src-tauri/tauri.updater.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - run: node scripts/release-assets.mjs "$env:TAG"
+      - name: Upload installer and latest.json
+        shell: bash
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" release-assets/* --clobber

@@ -654,6 +654,35 @@ a:focus-visible {
   font-family: var(--mono);
 }
 
+.update {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.update-action {
+  padding: 0;
+  font-size: inherit;
+}
+
+.update-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.update-new {
+  color: var(--accent-2);
+}
+
+.update-error {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--danger);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
