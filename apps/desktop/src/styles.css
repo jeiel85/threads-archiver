@@ -778,13 +778,34 @@ a:focus-visible {
 }
 
 .login-setting button {
-  justify-self: start;
   padding: 7px 12px;
   font-size: 12.5px;
 }
 
 .login-setting .setting-desc {
   grid-column: 1;
+}
+
+.login-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.login-state {
+  font-size: 12px;
+}
+
+.login-state.on {
+  color: var(--success);
+}
+
+.login-state.off {
+  color: var(--muted-dim);
+}
+
+.login-setting .login-error {
+  color: var(--danger);
 }
 
 /* ---------- history ---------- */

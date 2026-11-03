@@ -95,6 +95,11 @@ export class ThreadsSession {
     this.browser = null;
   }
 
+  /** Threads 로그인 세션 쿠키 값. 로그인하지 않았으면 undefined. */
+  async loginCookie(): Promise<string | undefined> {
+    return sessionCookie(this.requireContext());
+  }
+
   /** 로그인·디버깅용으로 페이지를 직접 연다. */
   async openPage(url: string): Promise<Page> {
     await this.open();
@@ -348,6 +353,43 @@ function downloadError(error: unknown, signal: AbortSignal): ArchiveError {
     `미디어를 내려받지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
     '네트워크 상태를 확인하고 다시 시도해 주세요.',
   );
+}
+
+/** 로그인하면 threads.com에 생기는 세션 쿠키 값 */
+export async function sessionCookie(context: BrowserContext): Promise<string | undefined> {
+  const cookies = await context.cookies('https://www.threads.com');
+  return cookies.find((cookie) => cookie.name === 'sessionid' && cookie.value)?.value;
+}
+
+/**
+ * 로그인 창에서 로그인이 끝나기를 기다린다.
+ * 창을 연 뒤 새 세션 쿠키가 생기면 true. 그 전에 창이 닫히거나 시간이 다 되면
+ * 그때까지 확인한 쿠키 유무를 돌려준다(이미 로그인돼 있던 경우 true).
+ */
+export async function waitForLogin(context: BrowserContext, timeoutMs: number, pollMs = 1000): Promise<boolean> {
+  const before = await sessionCookie(context);
+  let latest = before;
+  return new Promise<boolean>((resolve) => {
+    let finished = false;
+    const finish = (value: boolean) => {
+      if (finished) return;
+      finished = true;
+      clearInterval(poll);
+      clearTimeout(timeout);
+      resolve(value);
+    };
+    const poll = setInterval(() => {
+      sessionCookie(context).then(
+        (cookie) => {
+          latest = cookie;
+          if (cookie && cookie !== before) finish(true);
+        },
+        () => undefined,
+      );
+    }, pollMs);
+    const timeout = setTimeout(() => finish(Boolean(latest)), timeoutMs);
+    context.once('close', () => finish(Boolean(latest)));
+  });
 }
 
 /** 로그아웃 상태에서 민감·연령 제한 게시물을 열면 나오는 안내 ("This content isn't available to everyone") */

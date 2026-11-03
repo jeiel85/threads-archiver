@@ -1,9 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { ThreadsSession } from './extract/session.js';
+import { ThreadsSession, waitForLogin } from './extract/session.js';
 import { saveArchive, defaultBaseDir, defaultFolderName, resolveArchiveDir } from './download.js';
 import { loadHistory, postSummary, savedSummary, saveHistory, trimHistory, type EngineJob } from './history.js';
 import { defaultProfileDir } from './paths.js';
@@ -25,8 +25,26 @@ const PORT = Number(process.env.THREADS_ARCHIVER_PORT ?? 0);
 const PROFILE_DIR = process.env.THREADS_ARCHIVER_PROFILE ?? defaultProfileDir();
 const HISTORY_FILE = process.env.THREADS_ARCHIVER_HISTORY ?? path.join(path.dirname(PROFILE_DIR), 'history.json');
 const LOGIN_URL = 'https://www.threads.com/login';
+const LOGIN_FILE = path.join(path.dirname(PROFILE_DIR), 'login.json');
 /** 로그인 창을 닫지 않고 둬도 다운로드가 영영 막히지 않게 하는 상한 */
 const LOGIN_TIMEOUT_MS = 15 * 60_000;
+/** 로그인 쿠키가 생긴 뒤 Threads가 첫 화면으로 넘어갈 시간을 주고 창을 닫는다. */
+const LOGIN_SETTLE_MS = 1500;
+
+/**
+ * 로그인 상태. state는 로그인 창의 진행(대기열에서 기다림 → 창 열림 → 끝),
+ * loggedIn은 마지막으로 확인한 세션 쿠키 유무(확인한 적 없으면 null). 앱을 다시 켜도 알 수 있게 파일에 남긴다.
+ */
+const loginStatus: {
+  state: 'idle' | 'waiting' | 'open';
+  loggedIn: boolean | null;
+  checkedAt?: number;
+  /** 마지막 로그인 시도가 실패했을 때의 이유. 다시 시도하면 지운다. */
+  error?: string;
+} = {
+  state: 'idle',
+  loggedIn: null,
+};
 
 const jobs = new Map<string, Job>();
 const abortControllers = new Map<string, AbortController>();
@@ -64,6 +82,23 @@ function serialize<T>(task: () => Promise<T>): Promise<T> {
 
 function isFinished(job: Job): boolean {
   return job.status === 'done' || job.status === 'error' || job.status === 'cancelled';
+}
+
+async function loadLoginStatus(): Promise<void> {
+  try {
+    const saved = JSON.parse(await readFile(LOGIN_FILE, 'utf8')) as { loggedIn?: unknown; checkedAt?: unknown };
+    if (typeof saved.loggedIn === 'boolean') loginStatus.loggedIn = saved.loggedIn;
+    if (typeof saved.checkedAt === 'number') loginStatus.checkedAt = saved.checkedAt;
+  } catch {
+    // 아직 확인한 적 없음
+  }
+}
+
+function setLoggedIn(loggedIn: boolean): void {
+  if (loginStatus.loggedIn === loggedIn) return;
+  loginStatus.loggedIn = loggedIn;
+  loginStatus.checkedAt = Date.now();
+  void writeFile(LOGIN_FILE, JSON.stringify({ loggedIn, checkedAt: loginStatus.checkedAt }), 'utf8').catch(() => undefined);
 }
 
 function getSession(): ThreadsSession {
@@ -138,7 +173,13 @@ async function runJob(job: Job): Promise<void> {
   try {
     const target = getSession();
     onProgress({ ratio: 0.05, message: 'Threads 페이지를 여는 중…' });
-    const archive: ThreadArchive = await target.extract(job.url);
+    let archive: ThreadArchive;
+    try {
+      archive = await target.extract(job.url);
+    } finally {
+      // 받을 때마다 로그인이 살아 있는지 함께 확인한다 (세션 만료·로그아웃 반영).
+      await target.loginCookie().then((cookie) => setLoggedIn(Boolean(cookie)), () => undefined);
+    }
     job.post = postSummary(archive);
     persistHistory();
     onProgress({ ratio: 0.3, message: '게시물을 읽었습니다. 저장을 시작합니다…' });
@@ -194,29 +235,38 @@ function retry(job: Job): void {
 }
 
 /**
- * Threads 로그인 창을 띄우고, 사용자가 창을 닫을 때까지 기다린다.
+ * Threads 로그인 창을 띄운다. 요청은 바로 돌려주고, 진행은 loginStatus로 알린다.
+ * 새 세션 쿠키가 생기면 로그인된 것으로 보고 창을 스스로 닫는다. 그 전에 사용자가 창을 닫으면
+ * 그때까지 확인한 쿠키로 판단한다(이미 로그인돼 있던 경우 포함).
  * 같은 프로필 폴더를 두 브라우저가 동시에 쓸 수 없으므로 다운로드 대기열에 끼워 차례로 실행하고,
  * 그동안 백그라운드 세션은 닫았다가 다음 작업에서 로그인된 프로필로 다시 연다.
  */
-function login(): Promise<void> {
-  return serialize(async () => {
+function startLogin(): void {
+  if (loginStatus.state !== 'idle') return;
+  loginStatus.state = 'waiting';
+  delete loginStatus.error;
+  void serialize(async () => {
+    loginStatus.state = 'open';
     await session?.close();
     session = null;
 
     const loginSession = new ThreadsSession({ profileDir: PROFILE_DIR, headed: true });
     try {
       const page = await loginSession.openPage(LOGIN_URL);
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, LOGIN_TIMEOUT_MS);
-        page.context().once('close', () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+      const loggedIn = await waitForLogin(page.context(), LOGIN_TIMEOUT_MS);
+      setLoggedIn(loggedIn);
+      if (loggedIn) await page.waitForTimeout(LOGIN_SETTLE_MS).catch(() => undefined);
     } finally {
       await loginSession.close();
     }
-  });
+  })
+    .catch((error) => {
+      // 요청은 이미 돌려줬으므로 실패는 상태에 남겨 설정 화면에서 보여 준다.
+      loginStatus.error = `로그인 창을 열지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
+    })
+    .finally(() => {
+      loginStatus.state = 'idle';
+    });
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -266,9 +316,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (url.pathname === '/api/login' && request.method === 'GET') {
+    sendJson(response, 200, loginStatus);
+    return;
+  }
+
   if (url.pathname === '/api/login' && request.method === 'POST') {
-    await login();
-    sendJson(response, 200, { ok: true });
+    startLogin();
+    sendJson(response, 202, loginStatus);
     return;
   }
 
@@ -339,6 +394,7 @@ const server = createServer((request, response) => {
 });
 
 for (const job of await loadHistory(HISTORY_FILE)) jobs.set(job.id, job);
+await loadLoginStatus();
 
 server.listen(PORT, '127.0.0.1', () => {
   const address = server.address();

@@ -171,8 +171,21 @@ export class EngineClient {
     return job;
   }
 
-  /** Threads 로그인 창을 띄우고, 사용자가 창을 닫으면 끝난다. */
-  login(): Promise<unknown> {
+  /** Threads 로그인 창을 띄운다. 바로 돌아오고, 진행은 loginStatus()로 확인한다. */
+  login(): Promise<LoginStatus> {
     return this.request('/api/login', { method: 'POST' });
   }
+
+  loginStatus(): Promise<LoginStatus> {
+    return this.request('/api/login');
+  }
+}
+
+/** state: 로그인 창 진행(대기열에서 기다림 → 열림 → 끝), loggedIn: 마지막으로 확인한 로그인 여부(모르면 null) */
+export interface LoginStatus {
+  state: 'idle' | 'waiting' | 'open';
+  loggedIn: boolean | null;
+  checkedAt?: number;
+  /** 마지막 로그인 시도가 실패한 이유 */
+  error?: string;
 }
