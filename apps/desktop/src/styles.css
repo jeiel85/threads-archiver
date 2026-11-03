@@ -761,6 +761,16 @@ a:focus-visible {
   line-height: 1.45;
 }
 
+/* 상위 설정(클립보드 감시)에 딸린 옵션 */
+.setting.nested {
+  margin-left: 25px;
+}
+
+.setting.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ---------- toast window ---------- */
 
 body.toast-body {
@@ -833,6 +843,10 @@ body.toast-body {
   display: flex;
   gap: 8px;
   margin-top: auto;
+}
+
+.progress-fill.countdown {
+  transition: width 1000ms linear;
 }
 
 .toast-actions button {

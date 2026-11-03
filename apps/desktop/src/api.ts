@@ -52,6 +52,7 @@ export function reportDownloadStatus(job: Job | null): void {
 
 export interface AppSettings {
   clipboardWatch: boolean;
+  autoDownload: boolean;
   autostart: boolean;
 }
 
