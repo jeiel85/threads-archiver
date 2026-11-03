@@ -42,7 +42,13 @@ function mediaVideoUrls(node: Record<string, unknown>): string[] {
       .filter((url): url is string => Boolean(url));
   }
   const url = firstVideoUrl(node);
-  return url ? [url] : [];
+  if (url) return [url];
+
+  // 인스타그램 릴스 등을 붙인 글은 게시물 자체엔 영상이 없고, 붙인 미디어(별도 코드)에 영상이 있다.
+  // (인용한 다른 게시물 share_info.quoted_post는 화면에서도 따로 빠지므로 포함하지 않는다.)
+  const appInfo = node.text_post_app_info;
+  const linked = appInfo && typeof appInfo === 'object' ? (appInfo as Record<string, unknown>).linked_inline_media : undefined;
+  return linked && typeof linked === 'object' ? mediaVideoUrls(linked as Record<string, unknown>) : [];
 }
 
 /** video_versions의 첫 항목이 가장 높은 화질이다. */
