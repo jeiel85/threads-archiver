@@ -404,9 +404,12 @@ type UpdateState =
  * 시작할 때 GitHub 최신 릴리스를 한 번 확인하고, 새 버전이 있으면 업데이트 버튼을 보여 준다.
  * 자동 확인 실패(오프라인 등)는 조용히 넘기고, 직접 누른 확인의 실패만 표시한다.
  */
-function UpdateStatus({ busy }: { busy: boolean }) {
+function UpdateStatus({ busy: mainBusy }: { busy: boolean }) {
   const [version, setVersion] = useState('');
   const [state, setState] = useState<UpdateState>({ kind: 'idle' });
+  // 알림 창에서 시작한 다운로드도 포함한 앱 전체의 다운로드 여부
+  const [downloading, setDownloading] = useState(false);
+  const busy = mainBusy || downloading;
 
   const check = useCallback(async (manual: boolean) => {
     setState({ kind: 'checking' });
@@ -426,8 +429,10 @@ function UpdateStatus({ busy }: { busy: boolean }) {
         current.kind === 'installing' ? { ...current, ...event.payload } : current,
       ),
     );
+    const unlistenDownloads = listen<boolean>('downloads-active', (event) => setDownloading(event.payload));
     return () => {
       void unlisten.then((stop) => stop());
+      void unlistenDownloads.then((stop) => stop());
     };
   }, [check]);
 

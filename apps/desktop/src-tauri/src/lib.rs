@@ -310,6 +310,10 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, Strin
 async fn install_update(app: tauri::AppHandle, state: State<'_, Arc<EngineState>>) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
 
+    if downloads_active(&app) {
+        return Err("다운로드가 진행 중입니다. 끝난 뒤에 업데이트해 주세요.".into());
+    }
+
     // 설치 프로그램이 동봉 node.exe를 덮어써야 하므로 앱이 종료되기 직전에 엔진을 먼저 끈다.
     let engine = Arc::clone(&state);
     let update = app
@@ -333,6 +337,11 @@ async fn install_update(app: tauri::AppHandle, state: State<'_, Arc<EngineState>
         )
         .await
         .map_err(|error| format!("업데이트를 내려받지 못했습니다: {error}"))?;
+
+    // 받는 동안 알림 창에서 새 다운로드가 시작됐으면 끊지 않도록 설치를 미룬다.
+    if downloads_active(&app) {
+        return Err("업데이트를 받는 동안 다운로드가 시작돼 설치를 미뤘습니다. 다운로드가 끝난 뒤 다시 눌러 주세요.".into());
+    }
 
     update
         .install(bytes)
@@ -415,18 +424,27 @@ fn set_download_status(
     downloads: State<'_, DownloadStatus>,
     status: Option<String>,
 ) {
-    let tooltip = {
+    let (tooltip, active) = {
         let mut map = downloads.0.lock().unwrap_or_else(|poison| poison.into_inner());
         match status {
             Some(text) => map.insert(window.label().to_string(), text),
             None => map.remove(window.label()),
         };
-        std::iter::once(TRAY_TOOLTIP.to_string()).chain(map.values().cloned()).collect::<Vec<_>>().join("
-")
+        let tooltip = std::iter::once(TRAY_TOOLTIP.to_string()).chain(map.values().cloned()).collect::<Vec<_>>().join("
+");
+        (tooltip, !map.is_empty())
     };
     if let Some(tray) = window.app_handle().tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(tooltip));
     }
+    // 어느 창에서든 받는 중이면 메인 창의 업데이트 버튼을 막는다.
+    let _ = window.app_handle().emit("downloads-active", active);
+}
+
+/// 메인 창·알림 창 중 하나라도 다운로드 중인지. 업데이트 설치는 엔진을 끄므로 이때는 막는다.
+fn downloads_active(app: &tauri::AppHandle) -> bool {
+    app.try_state::<DownloadStatus>()
+        .is_some_and(|downloads| downloads.0.lock().is_ok_and(|map| !map.is_empty()))
 }
 
 /// 트레이 아이콘 클릭: 알림 창에서 받는 중이면 그 진행 창을 다시 띄우고, 아니면 메인 창을 연다.
