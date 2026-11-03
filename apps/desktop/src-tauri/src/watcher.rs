@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -18,13 +19,22 @@ const TOAST_HEIGHT: f64 = 148.0;
 const TOAST_MARGIN: f64 = 16.0;
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// 팝업에 넘기는 감지 결과. 자동 다운로드 여부는 감지한 순간의 설정을 따른다.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToastLink {
+    pub url: String,
+    pub auto_download: bool,
+}
+
 #[derive(Default)]
 pub struct WatchState {
     pub enabled: AtomicBool,
+    pub auto_download: AtomicBool,
     /// 이번 실행에서 이미 알린 링크들. A → B → A 순서로 복사해도 A를 다시 띄우지 않는다.
     notified: Mutex<HashSet<String>>,
     /// 팝업 창이 처음 뜰 때 가져갈 링크 (이벤트보다 창 로딩이 늦을 수 있어서 따로 보관)
-    pub current_url: Mutex<Option<String>>,
+    pub current_link: Mutex<Option<ToastLink>>,
 }
 
 impl WatchState {
@@ -111,7 +121,8 @@ pub fn spawn(app: AppHandle, state: Arc<WatchState>) {
 }
 
 fn show_toast(app: &AppHandle, state: &WatchState, url: String) {
-    *state.current_url.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(url.clone());
+    let link = ToastLink { url, auto_download: state.auto_download.load(Ordering::Relaxed) };
+    *state.current_link.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(link.clone());
 
     let window = match app.get_webview_window(TOAST_LABEL) {
         Some(window) => window,
@@ -125,7 +136,7 @@ fn show_toast(app: &AppHandle, state: &WatchState, url: String) {
     };
 
     place_bottom_right(&window);
-    let _ = window.emit("toast-url", url);
+    let _ = window.emit("toast-link", link);
     let _ = window.show();
 }
 

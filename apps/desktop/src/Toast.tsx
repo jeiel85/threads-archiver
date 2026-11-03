@@ -6,16 +6,28 @@ import { EngineClient, EngineError, percentText, reportDownloadStatus, transferT
 /**
  * 클립보드에서 Threads 링크를 감지했을 때 우측 하단에 뜨는 작은 창.
  * [다운로드]를 누르면 바로 기본 저장 폴더에 받고, 같은 창에서 진행·완료를 보여 준다.
+ * 자동 다운로드가 켜져 있으면 잠시 카운트다운한 뒤 스스로 받고, 그 사이 [다운로드 하지 않기]로 취소할 수 있다.
  */
 
 type ToastState =
   | { kind: 'detected' }
+  | { kind: 'countdown'; remaining: number }
   | { kind: 'downloading'; job: Job }
   | { kind: 'done'; job: Job }
   | { kind: 'error'; message: string };
 
 const DETECTED_HIDE_MS = 15_000;
 const DONE_HIDE_MS = 10_000;
+const AUTO_DOWNLOAD_SECONDS = 5;
+
+interface ToastLink {
+  url: string;
+  autoDownload: boolean;
+}
+
+function initialState(link: ToastLink): ToastState {
+  return link.autoDownload ? { kind: 'countdown', remaining: AUTO_DOWNLOAD_SECONDS } : { kind: 'detected' };
+}
 
 export default function Toast() {
   const [url, setUrl] = useState<string | null>(null);
@@ -28,14 +40,18 @@ export default function Toast() {
 
   useEffect(() => {
     document.body.classList.add('toast-body');
-    void invoke<string | null>('current_toast_url').then((current) => {
-      if (current) setUrl(current);
+    void invoke<ToastLink | null>('current_toast_link').then((current) => {
+      if (!current) return;
+      setUrl(current.url);
+      setState(initialState(current));
     });
-    const unlisten = listen<string>('toast-url', (event) => {
+    const unlisten = listen<ToastLink>('toast-link', (event) => {
       runId.current += 1; // 진행 중이던 이전 링크의 결과는 버린다.
       submitting.current = false;
-      setUrl(event.payload);
-      setState({ kind: 'detected' });
+      // 마우스를 올린 채 버튼을 눌러 창이 숨겨지면 mouseleave가 오지 않으므로, 새 링크에서는 hover를 풀어 둔다.
+      setHovered(false);
+      setUrl(event.payload.url);
+      setState(initialState(event.payload));
     });
     return () => {
       void unlisten.then((stop) => stop());
@@ -96,6 +112,26 @@ export default function Toast() {
     }
   }, [url]);
 
+  // 자동 다운로드 카운트다운. 마우스를 올려 두면 멈춰서 버튼을 누를 여유를 준다.
+  const remaining = state.kind === 'countdown' ? state.remaining : null;
+  useEffect(() => {
+    if (remaining === null || hovered) return;
+    if (remaining <= 0) {
+      void download();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setState((current) => (current.kind === 'countdown' ? { kind: 'countdown', remaining: current.remaining - 1 } : current));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [remaining, hovered, download]);
+
+  // 숨긴 창에서 카운트다운이 이어지지 않도록 상태부터 바꾼 뒤 숨긴다.
+  const cancelAutoDownload = useCallback(() => {
+    setState({ kind: 'detected' });
+    hide();
+  }, [hide]);
+
   const openFolder = useCallback(async (path: string) => {
     try {
       await invoke('open_archive_item', { path });
@@ -125,7 +161,12 @@ export default function Toast() {
           –
         </button>
       ) : (
-        <button type="button" className="toast-close" aria-label="닫기" onClick={hide}>
+        <button
+          type="button"
+          className="toast-close"
+          aria-label="닫기"
+          onClick={state.kind === 'countdown' ? cancelAutoDownload : hide}
+        >
           ×
         </button>
       )}
@@ -140,6 +181,26 @@ export default function Toast() {
             </button>
             <button type="button" className="ghost" onClick={hide}>
               무시
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      {state.kind === 'countdown' ? (
+        <>
+          <div className="toast-title">
+            {hovered ? '자동 다운로드를 잠시 멈췄어요' : `${state.remaining}초 뒤 자동으로 다운로드해요`}
+          </div>
+          <div className="toast-url mono">{shortUrl(url)}</div>
+          <div className="progress-track">
+            <div className="progress-fill countdown" style={{ width: `${(state.remaining / AUTO_DOWNLOAD_SECONDS) * 100}%` }} />
+          </div>
+          <div className="toast-actions">
+            <button type="button" className="primary" onClick={() => void download()}>
+              지금 다운로드
+            </button>
+            <button type="button" className="ghost" onClick={cancelAutoDownload}>
+              다운로드 하지 않기
             </button>
           </div>
         </>

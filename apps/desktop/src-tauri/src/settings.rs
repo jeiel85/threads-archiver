@@ -12,6 +12,8 @@ use tauri::Manager;
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub clipboard_watch: bool,
+    /// 감지한 링크를 팝업에서 잠시 기다린 뒤 자동으로 받는다(팝업에서 취소 가능).
+    pub auto_download: bool,
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {

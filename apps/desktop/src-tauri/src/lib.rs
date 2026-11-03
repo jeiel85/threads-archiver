@@ -15,7 +15,7 @@ use tauri_plugin_autostart::ManagerExt as _;
 mod settings;
 mod watcher;
 
-use watcher::WatchState;
+use watcher::{ToastLink, WatchState};
 
 #[derive(Clone, Serialize)]
 struct EngineInfo {
@@ -367,12 +367,14 @@ struct TrayWatchItem(CheckMenuItem<tauri::Wry>);
 #[serde(rename_all = "camelCase")]
 struct SettingsView {
     clipboard_watch: bool,
+    auto_download: bool,
     autostart: bool,
 }
 
 fn settings_view(app: &tauri::AppHandle, watch: &WatchState) -> SettingsView {
     SettingsView {
         clipboard_watch: watch.enabled.load(Ordering::Relaxed),
+        auto_download: watch.auto_download.load(Ordering::Relaxed),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
     }
 }
@@ -393,6 +395,19 @@ fn set_clipboard_watch(
 }
 
 #[tauri::command]
+fn set_auto_download(
+    app: tauri::AppHandle,
+    watch: State<'_, Arc<WatchState>>,
+    enabled: bool,
+) -> Result<SettingsView, String> {
+    let mut current = settings::load(&app);
+    current.auto_download = enabled;
+    settings::save(&app, &current)?;
+    watch.auto_download.store(enabled, Ordering::Relaxed);
+    Ok(settings_view(&app, &watch))
+}
+
+#[tauri::command]
 fn set_autostart(
     app: tauri::AppHandle,
     watch: State<'_, Arc<WatchState>>,
@@ -406,8 +421,8 @@ fn set_autostart(
 
 /// 팝업 창이 처음 뜰 때 보여 줄 링크
 #[tauri::command]
-fn current_toast_url(watch: State<'_, Arc<WatchState>>) -> Option<String> {
-    watch.current_url.lock().ok().and_then(|url| url.clone())
+fn current_toast_link(watch: State<'_, Arc<WatchState>>) -> Option<ToastLink> {
+    watch.current_link.lock().ok().and_then(|link| link.clone())
 }
 
 #[tauri::command]
@@ -561,8 +576,9 @@ pub fn run() {
             open_archive_item,
             get_settings,
             set_clipboard_watch,
+            set_auto_download,
             set_autostart,
-            current_toast_url,
+            current_toast_link,
             hide_toast,
             set_download_status,
             show_main_window,
@@ -585,6 +601,7 @@ pub fn run() {
 
             let saved = settings::load(app.handle());
             setup_watch.enabled.store(saved.clipboard_watch, Ordering::Relaxed);
+            setup_watch.auto_download.store(saved.auto_download, Ordering::Relaxed);
             build_tray(app, saved.clipboard_watch)?;
             watcher::spawn(app.handle().clone(), Arc::clone(&setup_watch));
 

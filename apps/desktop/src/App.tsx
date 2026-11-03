@@ -349,7 +349,7 @@ function SettingsPanel({ onError }: { onError: (error: UiError) => void }) {
   }, []);
 
   const change = useCallback(
-    async (command: 'set_clipboard_watch' | 'set_autostart', enabled: boolean) => {
+    async (command: 'set_clipboard_watch' | 'set_auto_download' | 'set_autostart', enabled: boolean) => {
       try {
         setSettings(await invoke<AppSettings>(command, { enabled }));
       } catch (cause) {
@@ -373,6 +373,19 @@ function SettingsPanel({ onError }: { onError: (error: UiError) => void }) {
         <span className="setting-desc">
           Threads 링크를 복사하면 우측 하단 알림에서 바로 다운로드합니다. 갤럭시는 'Windows와 연결'의 클립보드
           동기화를 켜면 폰에서 복사한 링크도 감지합니다. 클립보드 내용은 링크 여부만 확인하고 저장하지 않습니다.
+        </span>
+      </label>
+      <label className={`setting nested${settings.clipboardWatch ? '' : ' disabled'}`}>
+        <input
+          type="checkbox"
+          checked={settings.autoDownload}
+          disabled={!settings.clipboardWatch}
+          onChange={(event) => void change('set_auto_download', event.target.checked)}
+        />
+        <span className="setting-title">자동 다운로드</span>
+        <span className="setting-desc">
+          링크를 감지하면 알림에서 5초 뒤 자동으로 받습니다. 그 전에 '다운로드 하지 않기'를 누르면 취소되고, 알림에
+          마우스를 올려 두면 카운트다운이 멈춥니다.
         </span>
       </label>
       <label className="setting">
