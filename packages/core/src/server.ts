@@ -47,8 +47,19 @@ function persistHistory(): void {
     });
 }
 
+/** 목록은 자주 읽으므로 큰 전체 결과(미디어 URL·파일 목록·미리보기)는 빼고 요약만 보낸다. 전체 결과는 단건 조회로 받는다. */
 function listJobs(): Job[] {
-  return trimHistory([...jobs.values()]);
+  return trimHistory([...jobs.values()]).map(({ result: _result, ...job }) => job);
+}
+
+/** 브라우저 프로필을 쓰는 일을 다운로드 대기열에 끼워 하나씩 실행한다 (로그인 창과 동시에 열리면 프로필이 잠긴다). */
+function serialize<T>(task: () => Promise<T>): Promise<T> {
+  const run = queue.then(task);
+  queue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 function isFinished(job: Job): boolean {
@@ -188,7 +199,7 @@ function retry(job: Job): void {
  * 그동안 백그라운드 세션은 닫았다가 다음 작업에서 로그인된 프로필로 다시 연다.
  */
 function login(): Promise<void> {
-  const run = queue.then(async () => {
+  return serialize(async () => {
     await session?.close();
     session = null;
 
@@ -206,8 +217,6 @@ function login(): Promise<void> {
       await loginSession.close();
     }
   });
-  queue = run.catch(() => undefined);
-  return run;
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -242,8 +251,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (url.pathname === '/api/extract' && request.method === 'POST') {
     const body = await readJson(request);
     const link = String(body.url ?? '');
-    const target = getSession();
-    const archive = await target.extract(link);
+    const archive = await serialize(() => getSession().extract(link));
     const folderName = defaultFolderName(archive);
     sendJson(response, 200, {
       archive,

@@ -173,6 +173,7 @@ export default function Toast() {
   }, [countdown, hovered, download]);
 
   // 감지 알림과 완료 알림은 잠시 뒤 스스로 사라진다. 마우스를 올려 두면 기다린다.
+  const pendingUrl = pending?.url;
   const view = pending ? pending.mode : submitError ? 'submit-error' : current ? 'progress' : trackedJobs.length ? 'finished' : null;
   useEffect(() => {
     if (hovered) return;
@@ -187,7 +188,8 @@ export default function Toast() {
       const timer = window.setTimeout(hide, DONE_HIDE_MS);
       return () => window.clearTimeout(timer);
     }
-  }, [view, hovered, hide]);
+    // 새 링크가 오면(pendingUrl) 그 링크에도 처음부터 같은 시간을 준다.
+  }, [view, pendingUrl, hovered, hide]);
 
   const openFolder = useCallback(
     async (path: string) => {
