@@ -20,6 +20,21 @@ const pageJson = JSON.stringify({
               ],
             },
             { code: 'IMAGE_ONLY', video_versions: null },
+            {
+              // 릴스를 붙인 글: 영상은 붙인 미디어에 있다. 인용한 게시물의 영상은 쓰지 않는다.
+              code: 'LINKED',
+              media_type: 19,
+              video_versions: null,
+              text_post_app_info: {
+                linked_inline_media: { code: 'REEL', media_type: 2, video_versions: [{ url: 'https://cdn/reel.mp4' }] },
+                share_info: { quoted_post: { code: 'QUOTED', video_versions: [{ url: 'https://cdn/quoted.mp4' }] } },
+              },
+            },
+            {
+              code: 'QUOTING',
+              video_versions: null,
+              text_post_app_info: { share_info: { quoted_post: { code: 'QUOTED2', video_versions: [{ url: 'https://cdn/q2.mp4' }] } } },
+            },
             // 같은 게시물이 다시 나와도 먼저 찾은 주소를 쓴다.
             { code: 'SINGLE', video_versions: [{ url: 'https://cdn/duplicate.mp4' }] },
           ],
@@ -47,6 +62,8 @@ describe('스트리밍 영상 원본 주소 찾기', () => {
     expect(map.get('SINGLE')).toEqual(['https://cdn/single-hd.mp4']);
     expect(map.get('CAROUSEL')).toEqual(['https://cdn/c-1.mp4', 'https://cdn/c-2.mp4']);
     expect(map.has('IMAGE_ONLY')).toBe(false);
+    expect(map.get('LINKED')).toEqual(['https://cdn/reel.mp4']);
+    expect(map.has('QUOTING')).toBe(false);
   });
 
   it('blob 영상만 원본 주소로 바꾸고, 못 바꾼 수를 돌려준다', () => {
