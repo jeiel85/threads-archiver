@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import {
   EngineClient,
   EngineError,
@@ -203,9 +203,15 @@ export default function Toast() {
     [hide],
   );
 
-  const openApp = useCallback(() => {
-    void invoke('show_main_window').then(hide);
-  }, [hide]);
+  /** 메인 창을 열고 원하는 탭(내역·설정 등)으로 바꾼다. */
+  const openApp = useCallback(
+    (tab: 'download' | 'history' | 'settings' = 'history') => {
+      void emit('show-tab', tab)
+        .then(() => invoke('show_main_window'))
+        .then(hide);
+    },
+    [hide],
+  );
 
   if (!view) return null;
 
@@ -303,7 +309,7 @@ export default function Toast() {
           </div>
           <div className="toast-url mono">{lastDone ? folderName(lastDone.saved?.outputDir ?? '') : '실패한 항목은 앱에서 다시 받을 수 있어요'}</div>
           <div className="toast-actions">
-            <button type="button" className="secondary" onClick={openApp}>
+            <button type="button" className="secondary" onClick={() => openApp('history')}>
               내역 보기
             </button>
             {lastDone?.saved ? (
@@ -328,7 +334,7 @@ function SingleResult({
   job: Job;
   onRetry: (job: Job) => Promise<void>;
   onOpenFolder: (path: string) => Promise<void>;
-  onOpenApp: () => void;
+  onOpenApp: (tab?: 'download' | 'history' | 'settings') => void;
   onClose: () => void;
 }) {
   if (job.status === 'done' && job.saved) {
@@ -346,7 +352,7 @@ function SingleResult({
           <button type="button" className="secondary" onClick={() => void onOpenFolder(outputDir)}>
             폴더 열기
           </button>
-          <button type="button" className="ghost" onClick={onOpenApp}>
+          <button type="button" className="ghost" onClick={() => onOpenApp('history')}>
             앱 열기
           </button>
         </div>
@@ -364,7 +370,11 @@ function SingleResult({
         <button type="button" className="secondary" onClick={() => void onRetry(job)}>
           다시 받기
         </button>
-        <button type="button" className="ghost" onClick={job.error?.code === 'POST_RESTRICTED' ? onOpenApp : onClose}>
+        <button
+          type="button"
+          className="ghost"
+          onClick={job.error?.code === 'POST_RESTRICTED' ? () => onOpenApp('settings') : onClose}
+        >
           {job.error?.code === 'POST_RESTRICTED' ? '앱에서 로그인' : '닫기'}
         </button>
       </div>
