@@ -20,6 +20,15 @@ import {
 
 type Phase = 'boot' | 'idle' | 'extracting' | 'preview' | 'downloading' | 'done';
 
+/** 메인 창의 탭. 알림 창에서 'show-tab' 이벤트로 바꿀 수도 있다. */
+export type Tab = 'download' | 'history' | 'settings';
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'download', label: '다운로드' },
+  { id: 'history', label: '내역' },
+  { id: 'settings', label: '설정' },
+];
+
 interface PreviewState {
   archive: ThreadArchive;
   folderName: string;
@@ -43,7 +52,17 @@ export default function App() {
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<UiError | null>(null);
+  const [tab, setTab] = useState<Tab>('download');
+  /** 내역 탭 배지: 받는 중·대기 중인 작업 수 */
+  const [activeCount, setActiveCount] = useState(0);
   const jobId = useRef<string | null>(null);
+
+  useEffect(() => {
+    const unlisten = listen<Tab>('show-tab', (event) => setTab(event.payload));
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -210,66 +229,21 @@ export default function App() {
         <EngineBadge engine={engine} phase={phase} />
       </header>
 
-      <section className="composer">
-        <label className="field">
-          <span className="field-label">Threads 공유 링크</span>
-          <div className={`input-row ${phase === 'extracting' ? 'is-busy' : ''}`}>
-            <input
-              type="url"
-              value={url}
-              placeholder={SAMPLE}
-              spellCheck={false}
-              autoComplete="off"
-              onChange={(event) => setUrl(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !busy) void handleExtract();
-              }}
-              disabled={busy}
-            />
-            <button type="button" className="ghost" onClick={handlePaste} disabled={busy}>
-              붙여넣기
-            </button>
-          </div>
-        </label>
-
-        <label className="field">
-          <span className="field-label">저장 폴더</span>
-          <div className="input-row">
-            <input
-              type="text"
-              value={outputDir}
-              placeholder="비워 두면 다운로드\Threads Archiver 아래에 저장됩니다"
-              spellCheck={false}
-              onChange={(event) => setOutputDir(event.target.value)}
-              disabled={busy}
-            />
-            <button type="button" className="ghost" onClick={() => void handlePickFolder()} disabled={busy}>
-              찾아보기
-            </button>
-          </div>
-        </label>
-
-        <div className="actions">
-          <button type="button" className="primary" onClick={() => void handleExtract()} disabled={busy || !url.trim()}>
-            {phase === 'extracting' ? '읽는 중…' : '미리보기'}
-          </button>
+      <nav className="tabs" role="tablist" aria-label="화면">
+        {TABS.map((item) => (
           <button
+            key={item.id}
             type="button"
-            className="secondary"
-            onClick={() => void handleDownload()}
-            disabled={!preview || busy}
+            role="tab"
+            aria-selected={tab === item.id}
+            className={`tab${tab === item.id ? ' active' : ''}`}
+            onClick={() => setTab(item.id)}
           >
-            {phase === 'downloading' ? '내려받는 중…' : '다운로드'}
+            {item.label}
+            {item.id === 'history' && activeCount ? <span className="tab-badge">{activeCount}</span> : null}
           </button>
-          {(preview || error) && !busy ? (
-            <button type="button" className="link" onClick={reset}>
-              초기화
-            </button>
-          ) : null}
-        </div>
-
-        <SettingsPanel client={client} onError={setError} />
-      </section>
+        ))}
+      </nav>
 
       {error ? (
         <div className="error-card" role="alert">
@@ -279,58 +253,130 @@ export default function App() {
         </div>
       ) : null}
 
-      {phase === 'extracting' ? (
-        <div className="skeleton-card">
-          <span className="spinner" aria-hidden="true" />
-          <div>
-            <strong>게시물을 읽고 있어요</strong>
-            <p>브라우저를 백그라운드로 열어 글과 미디어를 확인합니다. 처음 실행은 조금 더 걸릴 수 있어요.</p>
-          </div>
-        </div>
-      ) : null}
+      {/* 탭을 옮겨도 미리보기·진행 상태가 남도록 숨기기만 한다. */}
+      <div className="tab-panel" role="tabpanel" hidden={tab !== 'download'}>
+        <section className="composer">
+          <label className="field">
+            <span className="field-label">Threads 공유 링크</span>
+            <div className={`input-row ${phase === 'extracting' ? 'is-busy' : ''}`}>
+              <input
+                type="url"
+                value={url}
+                placeholder={SAMPLE}
+                spellCheck={false}
+                autoComplete="off"
+                onChange={(event) => setUrl(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !busy) void handleExtract();
+                }}
+                disabled={busy}
+              />
+              <button type="button" className="ghost" onClick={handlePaste} disabled={busy}>
+                붙여넣기
+              </button>
+            </div>
+          </label>
 
-      {preview ? <ArchivePreview preview={preview} outputDir={outputDir} /> : null}
+          <label className="field">
+            <span className="field-label">저장 폴더</span>
+            <div className="input-row">
+              <input
+                type="text"
+                value={outputDir}
+                placeholder="비워 두면 다운로드\Threads Archiver 아래에 저장됩니다"
+                spellCheck={false}
+                onChange={(event) => setOutputDir(event.target.value)}
+                disabled={busy}
+              />
+              <button type="button" className="ghost" onClick={() => void handlePickFolder()} disabled={busy}>
+                찾아보기
+              </button>
+            </div>
+          </label>
 
-      {phase === 'downloading' && job ? (
-        <div className="progress-card">
-          <div className="progress-head">
-            <strong>{job.message}</strong>
-            <span>{[transferText(job), percentText(job)].filter(Boolean).join(' · ')}</span>
+          <div className="actions">
+            <button type="button" className="primary" onClick={() => void handleExtract()} disabled={busy || !url.trim()}>
+              {phase === 'extracting' ? '읽는 중…' : '미리보기'}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void handleDownload()}
+              disabled={!preview || busy}
+            >
+              {phase === 'downloading' ? '내려받는 중…' : '다운로드'}
+            </button>
+            {(preview || error) && !busy ? (
+              <button type="button" className="link" onClick={reset}>
+                초기화
+              </button>
+            ) : null}
           </div>
-          <div className="progress-track">
-            <div className="progress-fill" style={{ width: `${Math.max(4, (job.progress ?? 0) * 100)}%` }} />
-          </div>
-        </div>
-      ) : null}
+        </section>
 
-      {result ? (
-        <div className="result-card">
-          <div className="result-head">
-            <span className="check" aria-hidden="true">✓</span>
+        {phase === 'extracting' ? (
+          <div className="skeleton-card">
+            <span className="spinner" aria-hidden="true" />
             <div>
-              <strong>저장 완료</strong>
-              <p className="mono path">{result.outputDir}</p>
+              <strong>게시물을 읽고 있어요</strong>
+              <p>브라우저를 백그라운드로 열어 글과 미디어를 확인합니다. 처음 실행은 조금 더 걸릴 수 있어요.</p>
             </div>
           </div>
-          <div className="result-meta">
-            <span>미디어 {result.files.filter((file) => file.kind !== 'metadata').length}개</span>
-            <span>메타데이터 post.json</span>
-            <span>Markdown post.md</span>
-          </div>
-          <div className="result-actions">
-            <button type="button" className="secondary" onClick={() => void openArchiveItem(result.outputDir)}>
-              폴더 열기
-            </button>
-            <button type="button" className="ghost" onClick={() => void openArchiveItem(result.manifestPath)}>
-              post.json 열기
-            </button>
-          </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {phase === 'idle' && !preview && !error ? <EmptyState onPick={setUrl} /> : null}
+        {preview ? <ArchivePreview preview={preview} outputDir={outputDir} /> : null}
 
-      {client ? <HistoryPanel client={client} onOpen={openArchiveItem} onError={setError} /> : null}
+        {phase === 'downloading' && job ? (
+          <div className="progress-card">
+            <div className="progress-head">
+              <strong>{job.message}</strong>
+              <span>{[transferText(job), percentText(job)].filter(Boolean).join(' · ')}</span>
+            </div>
+            <div className="progress-track">
+              <div className="progress-fill" style={{ width: `${Math.max(4, (job.progress ?? 0) * 100)}%` }} />
+            </div>
+          </div>
+        ) : null}
+
+        {result ? (
+          <div className="result-card">
+            <div className="result-head">
+              <span className="check" aria-hidden="true">✓</span>
+              <div>
+                <strong>저장 완료</strong>
+                <p className="mono path">{result.outputDir}</p>
+              </div>
+            </div>
+            <div className="result-meta">
+              <span>미디어 {result.files.filter((file) => file.kind !== 'metadata').length}개</span>
+              <span>메타데이터 post.json</span>
+              <span>Markdown post.md</span>
+            </div>
+            <div className="result-actions">
+              <button type="button" className="secondary" onClick={() => void openArchiveItem(result.outputDir)}>
+                폴더 열기
+              </button>
+              <button type="button" className="ghost" onClick={() => void openArchiveItem(result.manifestPath)}>
+                post.json 열기
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {phase === 'idle' && !preview && !error ? <EmptyState onPick={setUrl} /> : null}
+      </div>
+
+      <div className="tab-panel" role="tabpanel" hidden={tab !== 'history'}>
+        {client ? (
+          <HistoryPanel client={client} onOpen={openArchiveItem} onError={setError} onActiveCount={setActiveCount} />
+        ) : null}
+      </div>
+
+      <div className="tab-panel" role="tabpanel" hidden={tab !== 'settings'}>
+        <section className="settings-card">
+          <SettingsPanel client={client} onError={setError} />
+        </section>
+      </div>
 
       <footer className="footer">
         <span>개인 백업용 도구입니다. 저작권과 Threads 이용약관을 존중해 주세요.</span>
@@ -351,10 +397,12 @@ function HistoryPanel({
   client,
   onOpen,
   onError,
+  onActiveCount,
 }: {
   client: EngineClient;
   onOpen: (path: string) => Promise<void>;
   onError: (error: UiError) => void;
+  onActiveCount: (count: number) => void;
 }) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -368,7 +416,9 @@ function HistoryPanel({
         const list = await client.jobs();
         if (stopped) return;
         setJobs(list);
-        if (list.some(isActive)) delay = HISTORY_ACTIVE_POLL_MS;
+        const active = list.filter(isActive).length;
+        onActiveCount(active);
+        if (active) delay = HISTORY_ACTIVE_POLL_MS;
       } catch {
         // 엔진이 잠시 응답하지 않아도 다음 주기에 다시 읽는다.
       }
@@ -379,7 +429,7 @@ function HistoryPanel({
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [client, refresh]);
+  }, [client, refresh, onActiveCount]);
 
   const act = useCallback(
     async (action: () => Promise<unknown>) => {
