@@ -116,7 +116,19 @@ export function extractThreadsDom(): RawDomResult {
   };
 
   const timestampLike = /^(\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}:\d{2}|\d+\s*(s|m|h|d|w|mo|y)|\d{1,2}월\s*\d{1,2}일|\d+시간|\d+일|\d+주|\d+개월)$/i;
-  const ignoredTexts = new Set(['author', '작성자', '·', '•', 'edited', '수정됨', 'see translation', '번역 보기']);
+  const ignoredTexts = new Set([
+    'author',
+    '작성자',
+    '·',
+    '•',
+    'edited',
+    '수정됨',
+    'see translation',
+    '번역 보기',
+    // 로그인하면 게시물 아래에 나오는 안내
+    'no replies yet',
+    '아직 답글이 없습니다',
+  ]);
 
   const isInsideNestedPost = (element: any, container: any): boolean => {
     const nested = element.parentElement ? element.parentElement.closest('[data-pressable-container]') : null;
@@ -124,6 +136,46 @@ export function extractThreadsDom(): RawDomResult {
   };
 
   const isAuthorAnchor = (anchor: any): boolean => /^\/@[^/]+\/?$/.test(String(anchor.getAttribute('href') ?? ''));
+
+  /**
+   * 로그인하면 게시물 안에 답글 입력창이 생기고, 그 안내 문구("Reply to …")도 span[dir=auto]로 들어 있다.
+   * 입력 요소를 품은 조상 중 글자가 이 문구뿐인 곳이 있으면 입력창의 안내 문구로 본다.
+   */
+  const isComposerPlaceholder = (span: any, container: any, text: string): boolean => {
+    for (let el = span.parentElement; el && el !== container; el = el.parentElement) {
+      if (clean(el.innerText ?? '') !== text) return false;
+      if (el.querySelector('[contenteditable="true"],[role="textbox"],textarea,input')) return true;
+    }
+    return false;
+  };
+
+  const pageCounter = /^\d+\s*\/\s*\d+$/;
+
+  /**
+   * span의 본문 글자. 로그인하면 본문 span 안에 버튼("Translate")과 타래 순번("1 / 3")이 함께 들어오므로,
+   * 그 요소들의 글자 줄을 본문에서 뺀다.
+   */
+  const spanBodyText = (span: any): string => {
+    const noise: any[] = Array.from(span.querySelectorAll('button,[role="button"],div')).filter(
+      (el: any) => el.matches('button,[role="button"]') || pageCounter.test(clean(el.innerText ?? '').replace(/\s+/g, ' ')),
+    );
+    const lines = String(span.innerText ?? span.textContent ?? '').split('\n');
+    for (const el of noise) {
+      const run = String(el.innerText ?? '')
+        .split('\n')
+        .map((line) => clean(line))
+        .filter(Boolean);
+      if (run.length === 0) continue;
+      // 같은 줄들이 연달아 나오는 마지막 자리를 찾아 뺀다.
+      for (let start = lines.length - run.length; start >= 0; start -= 1) {
+        if (run.every((line, offset) => clean(lines[start + offset]) === line)) {
+          lines.splice(start, run.length);
+          break;
+        }
+      }
+    }
+    return clean(lines.join('\n'));
+  };
 
   const collectText = (container: any): string => {
     const likeButton = Array.from(container.querySelectorAll('[role="button"]')).find((button: any) =>
@@ -141,8 +193,9 @@ export function extractThreadsDom(): RawDomResult {
       if (span.querySelector('span[dir="auto"]')) continue; // 중첩된 내부 span은 중복이므로 제외
       if (likeButton && likeButton.parentElement && likeButton.contains(span)) continue;
 
-      const text = clean(span.innerText ?? span.textContent ?? '');
+      const text = spanBodyText(span);
       if (!text) continue;
+      if (isComposerPlaceholder(span, container, text)) continue;
       if (timestampLike.test(text)) continue;
       if (ignoredTexts.has(text.toLowerCase())) continue;
       if (chunks[chunks.length - 1] === text) continue;
