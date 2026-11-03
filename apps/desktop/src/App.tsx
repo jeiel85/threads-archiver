@@ -15,6 +15,7 @@ import {
   type AppSettings,
   type EngineInfo,
   type Job,
+  type LoginStatus,
 } from './api';
 
 type Phase = 'boot' | 'idle' | 'extracting' | 'preview' | 'downloading' | 'done';
@@ -475,19 +476,42 @@ function shortLink(url: string): string {
   return url.replace(/^https?:\/\/(www\.)?/, '').replace(/\?.*$/, '');
 }
 
+const LOGIN_ACTIVE_POLL_MS = 1000;
+const LOGIN_IDLE_POLL_MS = 10_000;
+
 function SettingsPanel({ client, onError }: { client: EngineClient | null; onError: (error: UiError) => void }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [loggingIn, setLoggingIn] = useState(false);
+  const [loginStatus, setLoginStatus] = useState<LoginStatus | null>(null);
+  const loginBusy = loginStatus?.state === 'waiting' || loginStatus?.state === 'open';
+
+  // 로그인 창이 열려 있는 동안만 자주 확인하고, 평소에는 다운로드 뒤 바뀐 상태를 가끔 반영한다.
+  useEffect(() => {
+    if (!client) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const status = await client.loginStatus();
+        if (stopped) return;
+        setLoginStatus(status);
+        timer = window.setTimeout(poll, status.state === 'idle' ? LOGIN_IDLE_POLL_MS : LOGIN_ACTIVE_POLL_MS);
+      } catch {
+        if (!stopped) timer = window.setTimeout(poll, LOGIN_IDLE_POLL_MS);
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [client, loginBusy]);
 
   const login = useCallback(async () => {
     if (!client) return;
-    setLoggingIn(true);
     try {
-      await client.login();
+      setLoginStatus(await client.login());
     } catch (cause) {
       onError(toUiError(cause));
-    } finally {
-      setLoggingIn(false);
     }
   }, [client, onError]);
 
@@ -550,12 +574,25 @@ function SettingsPanel({ client, onError }: { client: EngineClient | null; onErr
         <span className="setting-desc">창을 닫아도 트레이에서 계속 실행됩니다. 완전히 끄려면 트레이 메뉴의 '종료'를 누르세요.</span>
       </label>
       <div className="setting login-setting">
-        <button type="button" className="secondary" disabled={!client || loggingIn} onClick={() => void login()}>
-          {loggingIn ? '로그인 창을 닫으면 끝나요…' : 'Threads 로그인'}
-        </button>
+        <div className="login-row">
+          <button type="button" className="secondary" disabled={!client || loginBusy} onClick={() => void login()}>
+            {loginStatus?.state === 'waiting'
+              ? '다운로드가 끝나면 로그인 창이 열려요…'
+              : loginStatus?.state === 'open'
+                ? '로그인 창에서 로그인해 주세요…'
+                : loginStatus?.loggedIn
+                  ? '다시 로그인'
+                  : 'Threads 로그인'}
+          </button>
+          {loginStatus && loginStatus.loggedIn !== null && !loginBusy ? (
+            <span className={`login-state ${loginStatus.loggedIn ? 'on' : 'off'}`}>
+              {loginStatus.loggedIn ? '● 로그인됨' : '○ 로그인 안 됨'}
+            </span>
+          ) : null}
+        </div>
         <span className="setting-desc">
           로그인해야 보이는 게시물(일부 사용자에게만 공개된 글 등)을 받으려면 한 번 로그인해 두세요. 열린 브라우저에서
-          로그인한 뒤 창을 닫으면 세션이 이 PC에만 저장됩니다. 로그인 창이 열려 있는 동안 다운로드는 잠시 기다립니다.
+          로그인하면 창이 저절로 닫히고, 세션은 이 PC에만 저장됩니다. 로그인 창이 열려 있는 동안 다운로드는 잠시 기다립니다.
         </span>
       </div>
     </div>
