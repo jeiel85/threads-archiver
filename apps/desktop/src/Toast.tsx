@@ -55,6 +55,8 @@ export default function Toast() {
   const submitting = useRef(new Set<string>());
   const jobsRef = useRef(jobs);
   jobsRef.current = jobs;
+  /** 작업을 추적하기 시작한 시각. 그 전에 보낸 목록 요청에 없다고 지워진 것으로 보지 않게 한다. */
+  const trackedAt = useRef(new Map<string, number>());
 
   const trackedJobs = tracked.map((id) => jobs[id]).filter((job): job is Job => Boolean(job));
   const activeJobs = trackedJobs.filter(isActive);
@@ -92,12 +94,19 @@ export default function Toast() {
     let timer: number | undefined;
     const poll = async () => {
       try {
+        const requestedAt = Date.now();
         const list = await (await engine()).jobs();
         if (stopped) return;
         setJobs((all) => {
           const next = { ...all };
           for (const job of list) next[job.id] = job;
           return next;
+        });
+        // 내역에서 지운 작업(끝난 것만 지울 수 있다)은 목록에서 빠지므로 추적에서도 뺀다.
+        const listed = new Set(list.map((job) => job.id));
+        setTracked((ids) => {
+          const kept = ids.filter((id) => listed.has(id) || (trackedAt.current.get(id) ?? 0) >= requestedAt);
+          return kept.length === ids.length ? ids : kept;
         });
       } catch {
         // 엔진이 잠시 응답하지 않아도 다음 주기에 다시 읽는다.
@@ -130,6 +139,7 @@ export default function Toast() {
         // 저장 위치는 엔진 기본값(다운로드\Threads Archiver) 아래 게시물별 폴더.
         const { jobId } = await (await engine()).startArchive(url, '');
         setJobs((all) => ({ ...all, [jobId]: { id: jobId, url, status: 'queued', progress: 0, message: '대기 중…' } }));
+        trackedAt.current.set(jobId, Date.now());
         setTracked((ids) => [...ids, jobId]);
       } catch (cause) {
         setSubmitError({ url, message: errorMessage(cause) });
