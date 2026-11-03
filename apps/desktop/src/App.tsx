@@ -388,6 +388,8 @@ export default function App() {
 
 const HISTORY_ACTIVE_POLL_MS = 700;
 const HISTORY_IDLE_POLL_MS = 3000;
+/** '내역 비우기'를 한 번 누른 뒤 확인을 기다리는 시간 */
+const CLEAR_CONFIRM_MS = 4000;
 
 /**
  * 다운로드 내역. 메인 창·알림 창에서 받은 작업과 지난 실행의 내역을 최근 순으로 보여 주고,
@@ -406,6 +408,14 @@ function HistoryPanel({
 }) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [refresh, setRefresh] = useState(0);
+  /** 비우기를 한 번 눌러 확인을 기다리는 중인지 */
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  useEffect(() => {
+    if (!confirmClear) return;
+    const timer = window.setTimeout(() => setConfirmClear(false), CLEAR_CONFIRM_MS);
+    return () => window.clearTimeout(timer);
+  }, [confirmClear]);
 
   useEffect(() => {
     let stopped = false;
@@ -445,11 +455,34 @@ function HistoryPanel({
 
   if (!jobs) return null;
 
+  const finishedCount = jobs.filter((job) => !isActive(job)).length;
+
+  const clear = () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      return;
+    }
+    setConfirmClear(false);
+    void act(() => client.clearHistory());
+  };
+
   return (
     <section className="history">
       <div className="history-head">
         <strong>다운로드 내역</strong>
-        <span>{jobs.length ? `${jobs.length}건` : ''}</span>
+        <span className="history-head-side">
+          {jobs.length ? `${jobs.length}건` : ''}
+          {finishedCount ? (
+            <button
+              type="button"
+              className={`link history-clear${confirmClear ? ' confirm' : ''}`}
+              title="끝난 항목을 내역에서 모두 지웁니다. 저장된 파일은 그대로 남습니다."
+              onClick={clear}
+            >
+              {confirmClear ? `한 번 더 누르면 ${finishedCount}건을 지워요` : '내역 비우기'}
+            </button>
+          ) : null}
+        </span>
       </div>
       {jobs.length === 0 ? (
         <p className="history-empty">아직 받은 게시물이 없어요. 여기서나 클립보드 알림에서 받은 내역이 모입니다.</p>
@@ -491,6 +524,15 @@ function HistoryPanel({
                     ) : null}
                     <button type="button" className="secondary" onClick={() => void act(() => client.retry(job.id))}>
                       다시 받기
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost history-delete"
+                      aria-label="내역에서 지우기"
+                      title="내역에서 지우기 (저장된 파일은 그대로)"
+                      onClick={() => void act(() => client.deleteJob(job.id))}
+                    >
+                      ×
                     </button>
                   </>
                 )}

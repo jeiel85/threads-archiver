@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadHistory, saveHistory, trimHistory, type EngineJob } from '../src/history.js';
+import { finishedIds, loadHistory, saveHistory, trimHistory, type EngineJob } from '../src/history.js';
 
 function job(id: string, createdAt: number, status: EngineJob['status'] = 'done'): EngineJob {
   return { id, url: `https://www.threads.com/@a/post/${id}`, status, progress: 1, message: '', createdAt };
@@ -48,6 +48,11 @@ describe('다운로드 내역', () => {
       ['error', 'INTERRUPTED'],
       ['error', 'INTERRUPTED'],
     ]);
+  });
+
+  it('내역 비우기는 끝난 작업만 고르고 받는 중·대기 중인 작업은 남긴다', () => {
+    const jobs = [job('a', 1), job('b', 2, 'running'), job('c', 3, 'error'), job('d', 4, 'queued'), job('e', 5, 'cancelled')];
+    expect(finishedIds(jobs)).toEqual(['a', 'c', 'e']);
   });
 
   it('내역 파일이 없거나 깨졌으면 빈 내역으로 시작한다', async () => {

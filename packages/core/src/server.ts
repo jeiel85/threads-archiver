@@ -5,7 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { ThreadsSession, waitForLogin } from './extract/session.js';
 import { saveArchive, defaultBaseDir, defaultFolderName, resolveArchiveDir } from './download.js';
-import { loadHistory, postSummary, savedSummary, saveHistory, trimHistory, type EngineJob } from './history.js';
+import { finishedIds, loadHistory, postSummary, savedSummary, saveHistory, trimHistory, type EngineJob } from './history.js';
 import { defaultProfileDir } from './paths.js';
 import { ArchiveError, type DownloadProgress, type ThreadArchive } from './types.js';
 
@@ -347,7 +347,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  const jobMatch = /^\/api\/jobs\/([a-f0-9]+)(\/cancel|\/retry)?$/.exec(url.pathname);
+  // 내역 비우기: 끝난 작업만 지운다. 받는 중·대기 중인 작업은 남긴다. 저장된 파일은 건드리지 않는다.
+  if (url.pathname === '/api/jobs/clear' && request.method === 'POST') {
+    const removed = finishedIds(jobs.values());
+    for (const id of removed) {
+      jobs.delete(id);
+      attempts.delete(id);
+    }
+    persistHistory();
+    sendJson(response, 200, { removed: removed.length });
+    return;
+  }
+
+  const jobMatch = /^\/api\/jobs\/([a-f0-9]+)(\/cancel|\/retry|\/delete)?$/.exec(url.pathname);
   if (jobMatch) {
     const job = jobs.get(jobMatch[1]!);
     if (!job) {
@@ -361,6 +373,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }
       retry(job);
       sendJson(response, 200, { job });
+      return;
+    }
+    if (jobMatch[2] === '/delete' && request.method === 'POST') {
+      if (!isFinished(job)) {
+        sendJson(response, 409, { error: { code: 'JOB_ACTIVE', message: '받는 중인 항목은 취소한 뒤 지울 수 있습니다.' } });
+        return;
+      }
+      jobs.delete(job.id);
+      attempts.delete(job.id);
+      persistHistory();
+      sendJson(response, 200, { removed: 1 });
       return;
     }
     if (jobMatch[2] === '/cancel' && request.method === 'POST') {
