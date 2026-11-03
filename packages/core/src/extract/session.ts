@@ -178,20 +178,31 @@ export class ThreadsSession {
   }
 
   private async waitForPost(page: Page, timeoutMs: number): Promise<void> {
+    // 일부 사용자에게만 공개된 게시물은 본문 대신 안내 화면만 나오므로, 그 화면이면 바로 멈춘다.
     await page
-      .waitForSelector('[data-pressable-container] time', { state: 'attached', timeout: timeoutMs })
+      .waitForFunction(
+        (pattern) =>
+          document.querySelector('[data-pressable-container] time') !== null ||
+          new RegExp(pattern, 'i').test(document.body ? document.body.innerText : ''),
+        RESTRICTED_PATTERN.source,
+        { timeout: timeoutMs },
+      )
       .catch(() => undefined);
 
     // 미디어의 srcset과 본문이 모두 렌더링될 시간을 준다.
     await page.waitForTimeout(400);
 
     const bodyText = await page.evaluate(() => (document.body ? document.body.innerText : ''));
-    if (looksLikeLoginWall(bodyText)) {
+    const hasPost = await page.locator('[data-pressable-container] time').count();
+    if (!hasPost && RESTRICTED_PATTERN.test(bodyText)) {
       throw new ArchiveError(
         'POST_RESTRICTED',
-        'Threads가 로그인을 요구했습니다.',
-        '`--login` 옵션으로 한 번 로그인하면 세션이 저장되어 다음부터 자동으로 사용됩니다.',
+        '로그인해야 볼 수 있는 게시물입니다.',
+        `Threads가 일부 사용자에게 공개하지 않는 게시물입니다. ${LOGIN_HINT}`,
       );
+    }
+    if (looksLikeLoginWall(bodyText)) {
+      throw new ArchiveError('POST_RESTRICTED', 'Threads가 로그인을 요구했습니다.', LOGIN_HINT);
     }
   }
 
@@ -338,6 +349,12 @@ function downloadError(error: unknown, signal: AbortSignal): ArchiveError {
     '네트워크 상태를 확인하고 다시 시도해 주세요.',
   );
 }
+
+/** 로그아웃 상태에서 민감·연령 제한 게시물을 열면 나오는 안내 ("This content isn't available to everyone") */
+const RESTRICTED_PATTERN = /isn['’]t available to everyone|can['’]t be seen by certain audiences/i;
+
+const LOGIN_HINT =
+  "앱에서는 설정의 'Threads 로그인', CLI에서는 `--login`으로 한 번 로그인하면 세션이 저장되어 다음부터 자동으로 사용됩니다.";
 
 function looksLikeLoginWall(text: string): boolean {
   const normalized = text.toLowerCase();

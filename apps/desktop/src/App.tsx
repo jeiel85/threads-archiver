@@ -7,6 +7,7 @@ import type { ThreadArchive } from '@threads-archiver/core';
 import {
   EngineClient,
   EngineError,
+  isActive,
   percentText,
   reportDownloadStatus,
   transferText,
@@ -266,7 +267,7 @@ export default function App() {
           ) : null}
         </div>
 
-        <SettingsPanel onError={setError} />
+        <SettingsPanel client={client} onError={setError} />
       </section>
 
       {error ? (
@@ -328,6 +329,8 @@ export default function App() {
 
       {phase === 'idle' && !preview && !error ? <EmptyState onPick={setUrl} /> : null}
 
+      {client ? <HistoryPanel client={client} onOpen={openArchiveItem} onError={setError} /> : null}
+
       <footer className="footer">
         <span>개인 백업용 도구입니다. 저작권과 Threads 이용약관을 존중해 주세요.</span>
         <UpdateStatus busy={phase === 'downloading'} />
@@ -336,8 +339,157 @@ export default function App() {
   );
 }
 
-function SettingsPanel({ onError }: { onError: (error: UiError) => void }) {
+const HISTORY_ACTIVE_POLL_MS = 700;
+const HISTORY_IDLE_POLL_MS = 3000;
+
+/**
+ * 다운로드 내역. 메인 창·알림 창에서 받은 작업과 지난 실행의 내역을 최근 순으로 보여 주고,
+ * 끝난 항목은 같은 링크로 다시 받을 수 있다.
+ */
+function HistoryPanel({
+  client,
+  onOpen,
+  onError,
+}: {
+  client: EngineClient;
+  onOpen: (path: string) => Promise<void>;
+  onError: (error: UiError) => void;
+}) {
+  const [jobs, setJobs] = useState<Job[] | null>(null);
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      let delay = HISTORY_IDLE_POLL_MS;
+      try {
+        const list = await client.jobs();
+        if (stopped) return;
+        setJobs(list);
+        if (list.some(isActive)) delay = HISTORY_ACTIVE_POLL_MS;
+      } catch {
+        // 엔진이 잠시 응답하지 않아도 다음 주기에 다시 읽는다.
+      }
+      if (!stopped) timer = window.setTimeout(poll, delay);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [client, refresh]);
+
+  const act = useCallback(
+    async (action: () => Promise<unknown>) => {
+      try {
+        await action();
+        setRefresh((value) => value + 1);
+      } catch (cause) {
+        onError(toUiError(cause));
+      }
+    },
+    [onError],
+  );
+
+  if (!jobs) return null;
+
+  return (
+    <section className="history">
+      <div className="history-head">
+        <strong>다운로드 내역</strong>
+        <span>{jobs.length ? `${jobs.length}건` : ''}</span>
+      </div>
+      {jobs.length === 0 ? (
+        <p className="history-empty">아직 받은 게시물이 없어요. 여기서나 클립보드 알림에서 받은 내역이 모입니다.</p>
+      ) : (
+        <ul className="history-list">
+          {jobs.map((job) => (
+            <li key={job.id} className={`history-item ${job.status}`}>
+              <span className="history-dot" aria-hidden="true" />
+              <div className="history-body">
+                <div className="history-title" title={job.url}>
+                  {job.post ? (
+                    <>
+                      <strong>@{job.post.owner}</strong> {job.post.text}
+                    </>
+                  ) : (
+                    <span className="mono">{shortLink(job.url ?? '')}</span>
+                  )}
+                </div>
+                <div className="history-sub" title={job.error?.hint ?? job.saved?.outputDir}>
+                  {historyStatus(job)}
+                </div>
+                {job.status === 'running' ? (
+                  <div className="progress-track">
+                    <div className="progress-fill" style={{ width: `${Math.max(4, job.progress * 100)}%` }} />
+                  </div>
+                ) : null}
+              </div>
+              <div className="history-actions">
+                {isActive(job) ? (
+                  <button type="button" className="ghost" onClick={() => void act(() => client.cancel(job.id))}>
+                    취소
+                  </button>
+                ) : (
+                  <>
+                    {job.status === 'done' && job.saved ? (
+                      <button type="button" className="ghost" onClick={() => void onOpen(job.saved!.outputDir)}>
+                        폴더 열기
+                      </button>
+                    ) : null}
+                    <button type="button" className="secondary" onClick={() => void act(() => client.retry(job.id))}>
+                      다시 받기
+                    </button>
+                  </>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function historyStatus(job: Job): string {
+  const when = job.finishedAt ?? job.createdAt;
+  const time = when
+    ? new Date(when).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : '';
+  switch (job.status) {
+    case 'queued':
+      return '대기 중';
+    case 'running':
+      return [job.message, transferText(job), percentText(job)].filter(Boolean).join(' · ');
+    case 'done':
+      return [time, '저장 완료', job.saved ? `미디어 ${job.saved.mediaCount}개` : ''].filter(Boolean).join(' · ');
+    case 'cancelled':
+      return [time, '취소됨'].filter(Boolean).join(' · ');
+    default:
+      return [time, job.error?.message ?? job.message].filter(Boolean).join(' · ');
+  }
+}
+
+function shortLink(url: string): string {
+  return url.replace(/^https?:\/\/(www\.)?/, '').replace(/\?.*$/, '');
+}
+
+function SettingsPanel({ client, onError }: { client: EngineClient | null; onError: (error: UiError) => void }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  const login = useCallback(async () => {
+    if (!client) return;
+    setLoggingIn(true);
+    try {
+      await client.login();
+    } catch (cause) {
+      onError(toUiError(cause));
+    } finally {
+      setLoggingIn(false);
+    }
+  }, [client, onError]);
 
   useEffect(() => {
     void invoke<AppSettings>('get_settings').then(setSettings);
@@ -397,6 +549,15 @@ function SettingsPanel({ onError }: { onError: (error: UiError) => void }) {
         <span className="setting-title">Windows 시작 시 트레이로 실행</span>
         <span className="setting-desc">창을 닫아도 트레이에서 계속 실행됩니다. 완전히 끄려면 트레이 메뉴의 '종료'를 누르세요.</span>
       </label>
+      <div className="setting login-setting">
+        <button type="button" className="secondary" disabled={!client || loggingIn} onClick={() => void login()}>
+          {loggingIn ? '로그인 창을 닫으면 끝나요…' : 'Threads 로그인'}
+        </button>
+        <span className="setting-desc">
+          로그인해야 보이는 게시물(일부 사용자에게만 공개된 글 등)을 받으려면 한 번 로그인해 두세요. 열린 브라우저에서
+          로그인한 뒤 창을 닫으면 세션이 이 PC에만 저장됩니다. 로그인 창이 열려 있는 동안 다운로드는 잠시 기다립니다.
+        </span>
+      </div>
     </div>
   );
 }
