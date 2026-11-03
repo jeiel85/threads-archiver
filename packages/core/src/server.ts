@@ -35,7 +35,13 @@ const LOGIN_SETTLE_MS = 1500;
  * 로그인 상태. state는 로그인 창의 진행(대기열에서 기다림 → 창 열림 → 끝),
  * loggedIn은 마지막으로 확인한 세션 쿠키 유무(확인한 적 없으면 null). 앱을 다시 켜도 알 수 있게 파일에 남긴다.
  */
-const loginStatus: { state: 'idle' | 'waiting' | 'open'; loggedIn: boolean | null; checkedAt?: number } = {
+const loginStatus: {
+  state: 'idle' | 'waiting' | 'open';
+  loggedIn: boolean | null;
+  checkedAt?: number;
+  /** 마지막 로그인 시도가 실패했을 때의 이유. 다시 시도하면 지운다. */
+  error?: string;
+} = {
   state: 'idle',
   loggedIn: null,
 };
@@ -238,6 +244,7 @@ function retry(job: Job): void {
 function startLogin(): void {
   if (loginStatus.state !== 'idle') return;
   loginStatus.state = 'waiting';
+  delete loginStatus.error;
   void serialize(async () => {
     loginStatus.state = 'open';
     await session?.close();
@@ -254,7 +261,8 @@ function startLogin(): void {
     }
   })
     .catch((error) => {
-      process.stderr.write(`로그인 창을 열지 못했습니다: ${error instanceof Error ? error.message : String(error)}\n`);
+      // 요청은 이미 돌려줬으므로 실패는 상태에 남겨 설정 화면에서 보여 준다.
+      loginStatus.error = `로그인 창을 열지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
     })
     .finally(() => {
       loginStatus.state = 'idle';

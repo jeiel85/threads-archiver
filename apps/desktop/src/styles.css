@@ -804,6 +804,10 @@ a:focus-visible {
   color: var(--muted-dim);
 }
 
+.login-setting .login-error {
+  color: var(--danger);
+}
+
 /* ---------- history ---------- */
 
 .history {

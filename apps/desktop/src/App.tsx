@@ -594,6 +594,11 @@ function SettingsPanel({ client, onError }: { client: EngineClient | null; onErr
           로그인해야 보이는 게시물(일부 사용자에게만 공개된 글 등)을 받으려면 한 번 로그인해 두세요. 열린 브라우저에서
           로그인하면 창이 저절로 닫히고, 세션은 이 PC에만 저장됩니다. 로그인 창이 열려 있는 동안 다운로드는 잠시 기다립니다.
         </span>
+        {loginStatus?.error && !loginBusy ? (
+          <span className="setting-desc login-error" role="alert">
+            {loginStatus.error}
+          </span>
+        ) : null}
       </div>
     </div>
   );

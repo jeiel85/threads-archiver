@@ -186,4 +186,6 @@ export interface LoginStatus {
   state: 'idle' | 'waiting' | 'open';
   loggedIn: boolean | null;
   checkedAt?: number;
+  /** 마지막 로그인 시도가 실패한 이유 */
+  error?: string;
 }
