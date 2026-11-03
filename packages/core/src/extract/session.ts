@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import process from 'node:process';
 import { ArchiveError, type ThreadArchive, type ThreadsPost } from '../types.js';
 import { extractThreadsDom, type RawDomResult } from '../dom/extractPage.js';
+import { resolveBlobVideos, videoUrlsByCode } from '../dom/pageData.js';
 import { parseThreadsUrl, isShortShareLink, type ParsedThreadsUrl } from '../urls.js';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
@@ -161,7 +162,16 @@ export class ThreadsSession {
       await this.waitForPost(page, timeoutMs);
 
       const raw = (await page.evaluate(extractThreadsDom)) as RawDomResult;
+      await resolveStreamedVideos(page, raw);
       const archive = buildArchive(raw, parsed);
+      // 아카이브에 들어가는 게시물만 따진다 (같은 화면의 다른 사람 답글 영상은 상관없음).
+      if (archive.posts.some((post) => post.media.some((media) => media.url.startsWith('blob:')))) {
+        throw new ArchiveError(
+          'EXTRACTION_FAILED',
+          '영상의 원본 주소를 찾지 못했습니다.',
+          '로그인 상태에서는 영상이 스트리밍으로 재생돼 페이지 데이터에서 주소를 찾습니다. 잠시 뒤 다시 받아 보세요.',
+        );
+      }
       await captureVideoPreviews(this.requireContext(), archive);
       return archive;
     } catch (error) {
@@ -353,6 +363,19 @@ function downloadError(error: unknown, signal: AbortSignal): ArchiveError {
     `미디어를 내려받지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
     '네트워크 상태를 확인하고 다시 시도해 주세요.',
   );
+}
+
+/** 로그인 상태에서 blob: 으로만 보이는 영상을 페이지 JSON의 원본 mp4 주소로 바꾼다. 못 바꾼 것은 그대로 둔다. */
+async function resolveStreamedVideos(page: Page, raw: RawDomResult): Promise<void> {
+  const hasBlob = raw.posts.some((post) => post.media.some((media) => media.kind === 'video' && media.url.startsWith('blob:')));
+  if (!hasBlob) return;
+
+  const jsonTexts = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('script[type="application/json"]'))
+      .map((script) => script.textContent ?? '')
+      .filter((text) => text.includes('video_versions')),
+  );
+  resolveBlobVideos(raw, videoUrlsByCode(jsonTexts));
 }
 
 /** 로그인하면 threads.com에 생기는 세션 쿠키 값 */
