@@ -5,8 +5,9 @@ import path from 'node:path';
 import process from 'node:process';
 import { ThreadsSession } from './extract/session.js';
 import { saveArchive, defaultBaseDir, defaultFolderName, resolveArchiveDir } from './download.js';
+import { loadHistory, postSummary, savedSummary, saveHistory, trimHistory, type EngineJob } from './history.js';
 import { defaultProfileDir } from './paths.js';
-import { ArchiveError, type ArchiveResult, type DownloadProgress, type ThreadArchive, type TransferProgress } from './types.js';
+import { ArchiveError, type DownloadProgress, type ThreadArchive } from './types.js';
 
 /**
  * 데스크톱 앱이 사용하는 로컬 엔진.
@@ -14,36 +15,45 @@ import { ArchiveError, type ArchiveResult, type DownloadProgress, type ThreadArc
  * - 127.0.0.1 에만 바인딩한다.
  * - 임의 토큰(x-engine-token)을 요구해 다른 로컬 프로세스의 무단 호출을 막는다.
  * - 시작 시 stdout에 `ENGINE_READY {"port":...,"token":"..."}` 한 줄을 출력한다.
+ * - 작업은 한 번에 하나씩 순서대로 처리하고, 내역은 history.json에 남긴다.
  */
 
-type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled';
-
-interface Job {
-  id: string;
-  status: JobStatus;
-  url: string;
-  /** 상위 저장 폴더. 게시물별 하위 폴더는 엔진이 정한다. */
-  baseDir?: string;
-  progress: number;
-  message: string;
-  /** 미디어를 받는 중일 때만 있음 */
-  transfer?: TransferProgress;
-  createdAt: number;
-  finishedAt?: number;
-  result?: ArchiveResult;
-  /** 같은 게시물을 이미 저장한 폴더가 있어 그 폴더에 다시 저장했는지 */
-  alreadySaved?: boolean;
-  error?: { code: string; message: string; hint?: string };
-}
+type Job = EngineJob;
 
 const TOKEN = process.env.THREADS_ARCHIVER_TOKEN ?? randomBytes(24).toString('hex');
 const PORT = Number(process.env.THREADS_ARCHIVER_PORT ?? 0);
 const PROFILE_DIR = process.env.THREADS_ARCHIVER_PROFILE ?? defaultProfileDir();
+const HISTORY_FILE = process.env.THREADS_ARCHIVER_HISTORY ?? path.join(path.dirname(PROFILE_DIR), 'history.json');
+const LOGIN_URL = 'https://www.threads.com/login';
+/** 로그인 창을 닫지 않고 둬도 다운로드가 영영 막히지 않게 하는 상한 */
+const LOGIN_TIMEOUT_MS = 15 * 60_000;
 
 const jobs = new Map<string, Job>();
 const abortControllers = new Map<string, AbortController>();
+/** 작업별 마지막 대기열 등록 번호. 대기 중 취소 후 다시 받으면 앞서 줄 선 실행은 건너뛴다. */
+const attempts = new Map<string, number>();
 let queue: Promise<void> = Promise.resolve();
 let session: ThreadsSession | null = null;
+
+let historyWrite: Promise<void> = Promise.resolve();
+
+/** 쓰기가 겹치지 않도록 줄 세워 내역을 저장한다. 실패해도 다운로드는 계속한다. */
+function persistHistory(): void {
+  historyWrite = historyWrite
+    .then(() => saveHistory(HISTORY_FILE, [...jobs.values()]))
+    .catch((error) => {
+      process.stderr.write(`내역을 저장하지 못했습니다: ${error instanceof Error ? error.message : String(error)}
+`);
+    });
+}
+
+function listJobs(): Job[] {
+  return trimHistory([...jobs.values()]);
+}
+
+function isFinished(job: Job): boolean {
+  return job.status === 'done' || job.status === 'error' || job.status === 'cancelled';
+}
 
 function getSession(): ThreadsSession {
   session ??= new ThreadsSession({ profileDir: PROFILE_DIR });
@@ -92,8 +102,11 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
 function enqueue(job: Job): void {
   job.status = 'queued';
   job.message = '대기 중…';
+  persistHistory();
+  const attempt = (attempts.get(job.id) ?? 0) + 1;
+  attempts.set(job.id, attempt);
   queue = queue
-    .then(() => runJob(job))
+    .then(() => (attempts.get(job.id) === attempt ? runJob(job) : undefined))
     .catch(() => undefined);
 }
 
@@ -115,6 +128,8 @@ async function runJob(job: Job): Promise<void> {
     const target = getSession();
     onProgress({ ratio: 0.05, message: 'Threads 페이지를 여는 중…' });
     const archive: ThreadArchive = await target.extract(job.url);
+    job.post = postSummary(archive);
+    persistHistory();
     onProgress({ ratio: 0.3, message: '게시물을 읽었습니다. 저장을 시작합니다…' });
 
     const outputDir = await resolveArchiveDir(job.baseDir ?? defaultBaseDir(), archive);
@@ -131,6 +146,7 @@ async function runJob(job: Job): Promise<void> {
     });
 
     job.result = result;
+    job.saved = savedSummary(result);
     job.status = 'done';
     job.progress = 1;
     job.message = `저장 완료: ${result.outputDir}`;
@@ -149,8 +165,49 @@ async function runJob(job: Job): Promise<void> {
     }
   } finally {
     abortControllers.delete(job.id);
+    job.transfer = undefined;
     job.finishedAt = Date.now();
+    persistHistory();
   }
+}
+
+/** 끝난 작업을 같은 항목으로 다시 받는다. 목록에서 맨 위로 올라온다. */
+function retry(job: Job): void {
+  job.progress = 0;
+  job.createdAt = Date.now();
+  delete job.finishedAt;
+  delete job.result;
+  delete job.error;
+  delete job.alreadySaved;
+  enqueue(job);
+}
+
+/**
+ * Threads 로그인 창을 띄우고, 사용자가 창을 닫을 때까지 기다린다.
+ * 같은 프로필 폴더를 두 브라우저가 동시에 쓸 수 없으므로 다운로드 대기열에 끼워 차례로 실행하고,
+ * 그동안 백그라운드 세션은 닫았다가 다음 작업에서 로그인된 프로필로 다시 연다.
+ */
+function login(): Promise<void> {
+  const run = queue.then(async () => {
+    await session?.close();
+    session = null;
+
+    const loginSession = new ThreadsSession({ profileDir: PROFILE_DIR, headed: true });
+    try {
+      const page = await loginSession.openPage(LOGIN_URL);
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, LOGIN_TIMEOUT_MS);
+        page.context().once('close', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    } finally {
+      await loginSession.close();
+    }
+  });
+  queue = run.catch(() => undefined);
+  return run;
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -196,6 +253,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (url.pathname === '/api/jobs' && request.method === 'GET') {
+    sendJson(response, 200, { jobs: listJobs() });
+    return;
+  }
+
+  if (url.pathname === '/api/login' && request.method === 'POST') {
+    await login();
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+
   if (url.pathname === '/api/jobs' && request.method === 'POST') {
     const body = await readJson(request);
     const link = String(body.url ?? '').trim();
@@ -216,18 +284,29 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  const jobMatch = /^\/api\/jobs\/([a-f0-9]+)(\/cancel)?$/.exec(url.pathname);
+  const jobMatch = /^\/api\/jobs\/([a-f0-9]+)(\/cancel|\/retry)?$/.exec(url.pathname);
   if (jobMatch) {
     const job = jobs.get(jobMatch[1]!);
     if (!job) {
       sendJson(response, 404, { error: { code: 'NOT_FOUND', message: '작업을 찾지 못했습니다.' } });
       return;
     }
-    if (jobMatch[2] && request.method === 'POST') {
+    if (jobMatch[2] === '/retry' && request.method === 'POST') {
+      if (!isFinished(job)) {
+        sendJson(response, 409, { error: { code: 'JOB_ACTIVE', message: '아직 진행 중인 작업입니다.' } });
+        return;
+      }
+      retry(job);
+      sendJson(response, 200, { job });
+      return;
+    }
+    if (jobMatch[2] === '/cancel' && request.method === 'POST') {
       abortControllers.get(job.id)?.abort();
       if (job.status === 'queued') {
         job.status = 'cancelled';
         job.message = '취소되었습니다.';
+        job.finishedAt = Date.now();
+        persistHistory();
       }
       sendJson(response, 200, { job });
       return;
@@ -250,6 +329,8 @@ const server = createServer((request, response) => {
     }
   });
 });
+
+for (const job of await loadHistory(HISTORY_FILE)) jobs.set(job.id, job);
 
 server.listen(PORT, '127.0.0.1', () => {
   const address = server.address();

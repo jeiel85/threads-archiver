@@ -15,7 +15,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 
 pub const TOAST_LABEL: &str = "toast";
 const TOAST_WIDTH: f64 = 380.0;
-const TOAST_HEIGHT: f64 = 148.0;
+const TOAST_HEIGHT: f64 = 168.0;
 const TOAST_MARGIN: f64 = 16.0;
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 

@@ -11,6 +11,14 @@ export interface EngineInfo {
 export interface Job {
   id: string;
   status: 'queued' | 'running' | 'done' | 'error' | 'cancelled';
+  /** 목록에서 받은 작업에만 있다 (작업을 막 만들었을 때의 임시 값에는 없음) */
+  url?: string;
+  createdAt?: number;
+  finishedAt?: number;
+  /** 게시물을 읽은 뒤 채워지는 작성자·본문 요약 */
+  post?: { owner: string; text: string };
+  /** 저장을 마친 뒤 채워지는 저장 위치 요약 (앱을 다시 켜도 남는다) */
+  saved?: { outputDir: string; manifestPath: string; mediaCount: number };
   progress: number;
   message: string;
   /** 미디어를 받는 중일 때: 몇 번째 파일인지, 받은/전체 바이트 */
@@ -44,9 +52,15 @@ function toMegabytes(bytes: number): string {
   return (bytes / 1024 / 1024).toFixed(1);
 }
 
-/** 트레이 툴팁에 다운로드 진행을 알린다. `null`이면 끝남. */
-export function reportDownloadStatus(job: Job | null): void {
-  const status = job ? ['다운로드 중', percentText(job), transferText(job)].filter(Boolean).join(' ') : null;
+export function isActive(job: Job): boolean {
+  return job.status === 'queued' || job.status === 'running';
+}
+
+/** 트레이 툴팁에 다운로드 진행을 알린다. `null`이면 끝남. `waiting`은 뒤에 대기 중인 건수. */
+export function reportDownloadStatus(job: Job | null, waiting = 0): void {
+  const status = job
+    ? ['다운로드 중', percentText(job), transferText(job), waiting ? `(대기 ${waiting}건)` : ''].filter(Boolean).join(' ')
+    : null;
   void invoke('set_download_status', { status }).catch(() => undefined);
 }
 
@@ -141,7 +155,24 @@ export class EngineClient {
     return job;
   }
 
+  /** 이번 실행의 작업과 지난 내역 (최근 순) */
+  async jobs(): Promise<Job[]> {
+    const { jobs } = await this.request<{ jobs: Job[] }>('/api/jobs');
+    return jobs;
+  }
+
   cancel(id: string): Promise<unknown> {
     return this.request(`/api/jobs/${id}/cancel`, { method: 'POST' });
+  }
+
+  /** 끝난 작업을 같은 항목으로 다시 받는다. */
+  async retry(id: string): Promise<Job> {
+    const { job } = await this.request<{ job: Job }>(`/api/jobs/${id}/retry`, { method: 'POST' });
+    return job;
+  }
+
+  /** Threads 로그인 창을 띄우고, 사용자가 창을 닫으면 끝난다. */
+  login(): Promise<unknown> {
+    return this.request('/api/login', { method: 'POST' });
   }
 }
