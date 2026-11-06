@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import process from 'node:process';
 import { ArchiveError, type ThreadArchive, type ThreadsPost } from '../types.js';
 import { extractThreadsDom, type RawDomResult } from '../dom/extractPage.js';
-import { resolveBlobVideos, videoUrlsByCode } from '../dom/pageData.js';
+import { fillVideosFromPageData, postsMissingVideos, resolveBlobVideos, videoUrlsByCode } from '../dom/pageData.js';
 import { parseThreadsUrl, isShortShareLink, type ParsedThreadsUrl } from '../urls.js';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
@@ -161,8 +161,7 @@ export class ThreadsSession {
 
       await this.waitForPost(page, timeoutMs);
 
-      const raw = (await page.evaluate(extractThreadsDom)) as RawDomResult;
-      await resolveStreamedVideos(page, raw);
+      const raw = await readPostWithVideos(page, parsed);
       const archive = buildArchive(raw, parsed);
       // 아카이브에 들어가는 게시물만 따진다 (같은 화면의 다른 사람 답글 영상은 상관없음).
       if (archive.posts.some((post) => post.media.some((media) => media.url.startsWith('blob:')))) {
@@ -365,17 +364,46 @@ function downloadError(error: unknown, signal: AbortSignal): ArchiveError {
   );
 }
 
-/** 로그인 상태에서 blob: 으로만 보이는 영상을 페이지 JSON의 원본 mp4 주소로 바꾼다. 못 바꾼 것은 그대로 둔다. */
-async function resolveStreamedVideos(page: Page, raw: RawDomResult): Promise<void> {
-  const hasBlob = raw.posts.some((post) => post.media.some((media) => media.kind === 'video' && media.url.startsWith('blob:')));
-  if (!hasBlob) return;
+/** 영상 플레이어가 늦게 그려질 때 다시 읽으며 기다리는 최대 시간과 간격 */
+const VIDEO_RENDER_WAIT_MS = 8_000;
+const VIDEO_RENDER_POLL_MS = 500;
 
+/**
+ * 게시물 화면을 읽고 영상 주소를 원본으로 맞춘다.
+ *
+ * - 페이지 JSON에는 영상이 있는데 화면에 <video>가 아직 없으면(첫 실행처럼 느릴 때) 잠시 다시 읽으며 기다린다.
+ *   끝내 그려지지 않으면 썸네일을 이미지로 저장하는 대신 JSON의 영상 주소로 채운다.
+ * - 로그인 상태에서 blob: 으로만 보이는 영상은 JSON의 원본 mp4 주소로 바꾼다. 못 바꾼 것은 그대로 둔다.
+ */
+async function readPostWithVideos(page: Page, parsed: ParsedThreadsUrl): Promise<RawDomResult> {
+  let raw = (await page.evaluate(extractThreadsDom)) as RawDomResult;
   const jsonTexts = await page.evaluate(() =>
     Array.from(document.querySelectorAll('script[type="application/json"]'))
       .map((script) => script.textContent ?? '')
       .filter((text) => text.includes('video_versions')),
   );
-  resolveBlobVideos(raw, videoUrlsByCode(jsonTexts));
+  const urlsByCode = videoUrlsByCode(jsonTexts);
+  // 아카이브에 들어가는 게시물만 따진다 (같은 화면의 다른 사람 답글 영상은 상관없음).
+  const missing = () => postsMissingVideos(raw, urlsByCode, archiveCodes(raw, parsed));
+
+  const deadline = Date.now() + VIDEO_RENDER_WAIT_MS;
+  while (missing().length > 0 && Date.now() < deadline) {
+    await page.waitForTimeout(VIDEO_RENDER_POLL_MS);
+    raw = (await page.evaluate(extractThreadsDom)) as RawDomResult;
+  }
+  fillVideosFromPageData(raw, urlsByCode, missing());
+
+  resolveBlobVideos(raw, urlsByCode);
+  return raw;
+}
+
+/** 아카이브에 들어갈 게시물 코드. 게시물을 못 찾는 화면이면 비워 두고, 그 오류는 buildArchive가 낸다. */
+function archiveCodes(raw: RawDomResult, parsed: ParsedThreadsUrl): string[] {
+  try {
+    return buildArchive(raw, parsed).posts.map((post) => post.shortcode);
+  } catch {
+    return [];
+  }
 }
 
 /** 로그인하면 threads.com에 생기는 세션 쿠키 값 */

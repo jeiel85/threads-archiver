@@ -79,3 +79,38 @@ export function resolveBlobVideos(raw: RawDomResult, urlsByCode: Map<string, str
   }
   return unresolved;
 }
+
+/**
+ * 페이지 JSON에는 영상이 있는데 화면(DOM)에서는 <video>를 하나도 못 찾은 게시물 코드.
+ * 로그인 상태로 브라우저를 막 띄운 직후처럼 느릴 때, 본문은 떴지만 영상 플레이어가 아직 그려지지 않아
+ * 썸네일 <picture>만 보이는 경우다. 그대로 두면 영상 대신 썸네일이 이미지로 저장된다.
+ * @param codes 아카이브에 들어가는 게시물 코드만 본다(같은 화면의 다른 사람 답글은 상관없음).
+ */
+export function postsMissingVideos(raw: RawDomResult, urlsByCode: Map<string, string[]>, codes: Iterable<string>): string[] {
+  const wanted = new Set(codes);
+  return raw.posts
+    .filter(
+      (post) =>
+        post.shortcode !== undefined &&
+        wanted.has(post.shortcode) &&
+        (urlsByCode.get(post.shortcode)?.length ?? 0) > 0 &&
+        !post.media.some((media) => media.kind === 'video'),
+    )
+    .map((post) => post.shortcode!);
+}
+
+/**
+ * 끝내 <video>가 그려지지 않은 게시물의 미디어를 페이지 JSON의 영상 주소로 채운다.
+ * 화면에 보이던 이미지는 영상의 썸네일이므로, 첫 이미지를 영상들의 미리보기로 쓴다.
+ */
+export function fillVideosFromPageData(raw: RawDomResult, urlsByCode: Map<string, string[]>, codes: Iterable<string>): void {
+  const targets = new Set(codes);
+  for (const post of raw.posts) {
+    if (!post.shortcode || !targets.has(post.shortcode)) continue;
+    const urls = urlsByCode.get(post.shortcode) ?? [];
+    if (urls.length === 0) continue;
+    const thumbnail = post.media.find((media) => media.kind === 'image');
+    const previewUrl = thumbnail ? thumbnail.previewUrl ?? thumbnail.url : undefined;
+    post.media = urls.map((url) => ({ kind: 'video', url, previewUrl }));
+  }
+}
