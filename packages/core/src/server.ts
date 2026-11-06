@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -460,9 +461,8 @@ async function sendSavedMedia(
     response.end();
     return;
   }
-  const stream = createReadStream(file, { start, end });
-  stream.on('error', () => response.destroy());
-  stream.pipe(response);
+  // pipeline은 응답이 중간에 닫히면(미리보기 전환·영상 메타데이터만 읽고 중단) 파일 스트림도 닫는다.
+  pipeline(createReadStream(file, { start, end }), response, () => undefined);
 }
 
 const server = createServer((request, response) => {
