@@ -324,7 +324,9 @@ export default function App() {
           </div>
         ) : null}
 
-        {preview ? <ArchivePreview preview={preview} outputDir={outputDir} /> : null}
+        {preview ? (
+          <ArchivePreview archive={preview.archive} note={`저장 위치: ${archiveDir(outputDir, preview)}`} />
+        ) : null}
 
         {phase === 'downloading' && job ? (
           <div className="progress-card">
@@ -410,6 +412,8 @@ function HistoryPanel({
   const [refresh, setRefresh] = useState(0);
   /** 비우기를 한 번 눌러 확인을 기다리는 중인지 */
   const [confirmClear, setConfirmClear] = useState(false);
+  /** 사용자가 고른 미리보기 항목. 고르지 않았으면 가장 최근에 저장한 항목을 보여 준다. */
+  const [selected, setSelected] = useState<string | null>(null);
 
   useEffect(() => {
     if (!confirmClear) return;
@@ -456,6 +460,9 @@ function HistoryPanel({
   if (!jobs) return null;
 
   const finishedCount = jobs.filter((job) => !isActive(job)).length;
+  // 미리보기는 늘 펼쳐 둔다. 고른 항목을 지웠거나 다시 받는 중이면 가장 최근에 저장한 항목으로 돌아간다.
+  const pickedJob = jobs.find((job) => job.id === selected && canPreview(job));
+  const selectedJob = pickedJob ?? jobs.find(canPreview);
 
   const clear = () => {
     if (!confirmClear) {
@@ -467,6 +474,7 @@ function HistoryPanel({
   };
 
   return (
+    <>
     <section className="history">
       <div className="history-head">
         <strong>다운로드 내역</strong>
@@ -489,7 +497,25 @@ function HistoryPanel({
       ) : (
         <ul className="history-list">
           {jobs.map((job) => (
-            <li key={job.id} className={`history-item ${job.status}`}>
+            <li
+              key={job.id}
+              className={`history-item ${job.status}${canPreview(job) ? ' previewable' : ''}${job.id === selectedJob?.id ? ' selected' : ''}`}
+              aria-current={job.id === selectedJob?.id ? 'true' : undefined}
+              {...(canPreview(job)
+                ? {
+                    tabIndex: 0,
+                    title: '눌러서 미리보기',
+                    onClick: () => setSelected(job.id),
+                    onKeyDown: (event: React.KeyboardEvent) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setSelected(job.id);
+                      }
+                    },
+                  }
+                : {})}
+            >
               <span className="history-dot" aria-hidden="true" />
               <div className="history-body">
                 <div className="history-title" title={job.url}>
@@ -510,7 +536,8 @@ function HistoryPanel({
                   </div>
                 ) : null}
               </div>
-              <div className="history-actions">
+              {/* 버튼을 눌러도 미리보기 항목이 바뀌지 않게 한다. */}
+              <div className="history-actions" onClick={(event) => event.stopPropagation()}>
                 {isActive(job) ? (
                   <button type="button" className="ghost" onClick={() => void act(() => client.cancel(job.id))}>
                     취소
@@ -542,6 +569,66 @@ function HistoryPanel({
         </ul>
       )}
     </section>
+    {selectedJob ? (
+      <HistoryPreview
+        key={`${selectedJob.id}-${selectedJob.finishedAt ?? 0}`}
+        client={client}
+        job={selectedJob}
+        scrollOnLoad={selectedJob === pickedJob}
+      />
+    ) : null}
+    </>
+  );
+}
+
+function canPreview(job: Job): boolean {
+  return job.status === 'done' && Boolean(job.saved);
+}
+
+/** 내역 항목 미리보기. 저장한 폴더의 post.json과 저장된 미디어 파일로 보여 준다 (다시 받지 않는다). */
+function HistoryPreview({ client, job, scrollOnLoad }: { client: EngineClient; job: Job; scrollOnLoad: boolean }) {
+  const [state, setState] = useState<
+    { kind: 'loading' } | { kind: 'ready'; archive: ThreadArchive; outputDir: string } | { kind: 'error'; error: UiError }
+  >({ kind: 'loading' });
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let stopped = false;
+    client.savedArchive(job.id).then(
+      ({ archive, outputDir }) => !stopped && setState({ kind: 'ready', archive, outputDir }),
+      (cause) => !stopped && setState({ kind: 'error', error: toUiError(cause) }),
+    );
+    return () => {
+      stopped = true;
+    };
+  }, [client, job.id]);
+
+  // 사용자가 항목을 골랐을 때만 미리보기로 스크롤한다 (처음 열 때 화면이 내려가지 않게).
+  useEffect(() => {
+    if (scrollOnLoad) ref.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [state.kind, scrollOnLoad]);
+
+  const mediaSrc = useCallback(
+    (media: Media) => (media.fileName ? client.savedMediaUrl(job.id, media.fileName) : undefined),
+    [client, job.id],
+  );
+
+  return (
+    <div className="history-preview" ref={ref}>
+      <div className="history-preview-bar">
+        <span>저장된 게시물 미리보기 · 내역에서 항목을 누르면 바뀝니다</span>
+      </div>
+      {state.kind === 'loading' ? <div className="skeleton-card history-preview-loading">저장된 게시물을 읽는 중…</div> : null}
+      {state.kind === 'error' ? (
+        <div className="error-card history-preview-error">
+          <strong>{state.error.message}</strong>
+          {state.error.hint ? <p>{state.error.hint}</p> : null}
+        </div>
+      ) : null}
+      {state.kind === 'ready' ? (
+        <ArchivePreview archive={state.archive} note={`저장 위치: ${state.outputDir}`} mediaSrc={mediaSrc} />
+      ) : null}
+    </div>
   );
 }
 
@@ -815,8 +902,16 @@ function EngineBadge({ engine, phase }: { engine: EngineInfo | null; phase: Phas
   );
 }
 
-function ArchivePreview({ preview, outputDir }: { preview: PreviewState; outputDir: string }) {
-  const { archive } = preview;
+/** 게시물 미리보기. mediaSrc가 주소를 주면 저장된 파일로, 아니면 추출 때 받은 미리보기 URL로 보여 준다. */
+function ArchivePreview({
+  archive,
+  note,
+  mediaSrc,
+}: {
+  archive: ThreadArchive;
+  note: string;
+  mediaSrc?: (media: Media) => string | undefined;
+}) {
   const root = archive.posts[0];
   const images = archive.posts.reduce(
     (sum, post) => sum + post.media.filter((media) => media.kind === 'image').length,
@@ -859,7 +954,11 @@ function ArchivePreview({ preview, outputDir }: { preview: PreviewState; outputD
               {post.media.length > 0 ? (
                 <div className="thumbs">
                   {post.media.map((media, mediaIndex) => (
-                    <MediaThumb key={`${media.url.slice(-24)}-${mediaIndex}`} media={media} />
+                    <MediaThumb
+                      key={`${media.url.slice(-24)}-${mediaIndex}`}
+                      media={media}
+                      localSrc={mediaSrc?.(media)}
+                    />
                   ))}
                 </div>
               ) : null}
@@ -868,15 +967,18 @@ function ArchivePreview({ preview, outputDir }: { preview: PreviewState; outputD
         ))}
       </ol>
 
-      <p className="preview-note mono">저장 위치: {archiveDir(outputDir, preview)}</p>
+      <p className="preview-note mono">{note}</p>
     </section>
   );
 }
 
 type Media = ThreadArchive['posts'][number]['media'][number];
 
-/** 미리보기 썸네일. 미리보기 URL이 없거나 불러오지 못하면 종류·해상도 칩으로 대신한다. */
-function MediaThumb({ media }: { media: Media }) {
+/**
+ * 미리보기 썸네일. localSrc(저장된 파일)가 있으면 그것을, 없으면 추출 때 받은 미리보기 URL을 쓴다.
+ * 둘 다 없거나 불러오지 못하면 종류·해상도 칩으로 대신한다.
+ */
+function MediaThumb({ media, localSrc }: { media: Media; localSrc?: string }) {
   const [failed, setFailed] = useState(false);
   const label = media.kind === 'video' ? '영상' : '이미지';
   const detail =
@@ -886,7 +988,8 @@ function MediaThumb({ media }: { media: Media }) {
         ? `${media.width}×${media.height}`
         : '';
 
-  if (!media.previewUrl || failed) {
+  const src = localSrc ?? media.previewUrl;
+  if (!src || failed) {
     return (
       <span className={`chip ${media.kind}`}>
         {label}
@@ -898,7 +1001,12 @@ function MediaThumb({ media }: { media: Media }) {
   const ratio = media.width && media.height ? media.width / media.height : 1;
   return (
     <figure className={`thumb ${media.kind}`} style={{ aspectRatio: String(Math.min(Math.max(ratio, 0.56), 1.78)) }}>
-      <img src={media.previewUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+      {localSrc && media.kind === 'video' ? (
+        // 저장된 영상은 대표 이미지가 없으므로 첫 장면을 보여 준다.
+        <video src={`${localSrc}#t=0.1`} preload="metadata" muted playsInline onError={() => setFailed(true)} />
+      ) : (
+        <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+      )}
       <figcaption>
         {media.kind === 'video' ? '▶ ' : ''}
         {detail || label}
