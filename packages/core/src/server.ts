@@ -164,11 +164,15 @@ async function runJob(job: Job, force: boolean): Promise<void> {
   if (job.status === 'cancelled') return;
 
   job.status = 'running';
-  if (!force && (await finishIfSaved(job))) return;
-
-  job.message = 'Threads 페이지를 여는 중…';
+  // 저장 폴더를 찾는 동안에도 취소할 수 있게 먼저 등록한다.
   const controller = new AbortController();
   abortControllers.set(job.id, controller);
+  if (!force && (await finishIfSaved(job, controller.signal))) {
+    abortControllers.delete(job.id);
+    return;
+  }
+
+  job.message = 'Threads 페이지를 여는 중…';
 
   const onProgress = (progress: DownloadProgress) => {
     job.progress = progress.ratio;
@@ -231,11 +235,18 @@ async function runJob(job: Job, force: boolean): Promise<void> {
 
 /**
  * 같은 게시물을 이미 다 저장해 두었으면 브라우저를 열지 않고 그 폴더로 바로 끝낸다.
- * 폴더를 찾다가 실패하면(권한 등) 평소처럼 페이지를 읽어 받는다.
+ * 폴더를 찾다가 실패하면(권한 등) 평소처럼 페이지를 읽어 받는다. 찾는 동안 취소했으면 취소로 끝낸다(true).
  */
-async function finishIfSaved(job: Job): Promise<boolean> {
+async function finishIfSaved(job: Job, signal: AbortSignal): Promise<boolean> {
   job.message = '이미 저장했는지 확인하는 중…';
   const result = await findSavedArchive(job.baseDir ?? defaultBaseDir(), job.url).catch(() => undefined);
+  if (signal.aborted) {
+    job.status = 'cancelled';
+    job.message = '취소되었습니다.';
+    job.finishedAt = Date.now();
+    persistHistory();
+    return true;
+  }
   if (!result) return false;
 
   job.post = postSummary(result.archive);

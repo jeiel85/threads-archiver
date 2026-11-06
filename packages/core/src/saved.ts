@@ -91,6 +91,8 @@ async function completeArchive(outputDir: string, shortcode: string): Promise<Ar
       const file = asset.fileName ? savedMediaPath(outputDir, asset.fileName) : undefined;
       const info = file ? await stat(file).catch(() => undefined) : undefined;
       if (!file || !info?.isFile()) return undefined;
+      // 다시 받다가 끊기면 예전 post.json은 남고 파일만 잘려 있을 수 있다. 적어 둔 크기와 다르면 다 받지 않은 것으로 본다.
+      if (typeof asset.bytes === 'number' && asset.bytes !== info.size) return undefined;
       files.push({ postShortcode: post.shortcode, kind: asset.kind, path: file, bytes: info.size });
     }
   }

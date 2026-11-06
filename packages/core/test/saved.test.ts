@@ -117,6 +117,16 @@ describe('이미 저장한 게시물 빨리 찾기', () => {
     await expect(findSavedArchive(base, link)).resolves.toBeUndefined();
   });
 
+  it('적어 둔 크기와 다른(잘린) 파일이 있으면 다 받지 않은 것으로 본다', async () => {
+    await savePost('글', 'ABC123', [{ kind: 'image', fileName: '01.jpg', bytes: 100 } as { kind: string; fileName: string }]);
+    await expect(findSavedArchive(base, link)).resolves.toBeUndefined();
+  });
+
+  it('적어 둔 크기와 같으면 저장된 것으로 본다', async () => {
+    await savePost('글', 'ABC123', [{ kind: 'image', fileName: '01.jpg', bytes: 4 } as { kind: string; fileName: string }]);
+    await expect(findSavedArchive(base, link)).resolves.toBeDefined();
+  });
+
   it('미디어 없이 저장한 폴더는 다 받지 않은 것으로 본다', async () => {
     await savePost('글', 'ABC123', [{ kind: 'image' }]);
     await expect(findSavedArchive(base, link)).resolves.toBeUndefined();
