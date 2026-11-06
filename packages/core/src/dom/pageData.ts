@@ -1,4 +1,4 @@
-import type { RawDomResult } from './extractPage.js';
+import type { RawDomMedia, RawDomResult } from './extractPage.js';
 
 /**
  * 로그인하면 Threads가 영상을 스트리밍(MSE)으로 재생해 <video>에는 `blob:` 주소만 남는다.
@@ -8,7 +8,31 @@ import type { RawDomResult } from './extractPage.js';
 
 /** 게시물 코드 → 영상 주소 목록 (여러 장짜리 게시물은 영상이 나오는 순서대로). */
 export function videoUrlsByCode(jsonTexts: string[]): Map<string, string[]> {
-  const result = new Map<string, string[]>();
+  return collectByCode(jsonTexts, (node) => {
+    const urls = mediaVideoUrls(node);
+    return urls.length ? urls : undefined;
+  });
+}
+
+export type CarouselItemKind = 'image' | 'video';
+
+/**
+ * 영상이 든 여러 장짜리 게시물의 장별 종류 (화면에 나오는 순서대로).
+ * 영상 플레이어가 그려지지 않았을 때 화면의 이미지 중 무엇이 진짜 사진이고 무엇이 영상 썸네일인지 가른다.
+ */
+export function carouselKindsByCode(jsonTexts: string[]): Map<string, CarouselItemKind[]> {
+  return collectByCode(jsonTexts, (node) => {
+    if (!Array.isArray(node.carousel_media)) return undefined;
+    const kinds = node.carousel_media.map((item): CarouselItemKind =>
+      item && typeof item === 'object' && firstVideoUrl(item as Record<string, unknown>) ? 'video' : 'image',
+    );
+    return kinds.includes('video') ? kinds : undefined;
+  });
+}
+
+/** 페이지 JSON을 훑어 게시물 코드마다 처음 값을 돌려주는 노드에서 값을 모은다. */
+function collectByCode<T>(jsonTexts: string[], pick: (node: Record<string, unknown>) => T | undefined): Map<string, T> {
+  const result = new Map<string, T>();
 
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) {
@@ -19,8 +43,8 @@ export function videoUrlsByCode(jsonTexts: string[]): Map<string, string[]> {
     const node = value as Record<string, unknown>;
 
     if (typeof node.code === 'string' && !result.has(node.code)) {
-      const urls = mediaVideoUrls(node);
-      if (urls.length) result.set(node.code, urls);
+      const picked = pick(node);
+      if (picked !== undefined) result.set(node.code, picked);
     }
     for (const child of Object.values(node)) visit(child);
   };
@@ -78,4 +102,58 @@ export function resolveBlobVideos(raw: RawDomResult, urlsByCode: Map<string, str
     }
   }
   return unresolved;
+}
+
+/**
+ * 페이지 JSON에는 영상이 있는데 화면(DOM)에서는 <video>를 하나도 못 찾은 게시물 코드.
+ * 로그인 상태로 브라우저를 막 띄운 직후처럼 느릴 때, 본문은 떴지만 영상 플레이어가 아직 그려지지 않아
+ * 썸네일 <picture>만 보이는 경우다. 그대로 두면 영상 대신 썸네일이 이미지로 저장된다.
+ * @param codes 아카이브에 들어가는 게시물 코드만 본다(같은 화면의 다른 사람 답글은 상관없음).
+ */
+export function postsMissingVideos(raw: RawDomResult, urlsByCode: Map<string, string[]>, codes: Iterable<string>): string[] {
+  const wanted = new Set(codes);
+  return raw.posts
+    .filter(
+      (post) =>
+        post.shortcode !== undefined &&
+        wanted.has(post.shortcode) &&
+        (urlsByCode.get(post.shortcode)?.length ?? 0) > 0 &&
+        !post.media.some((media) => media.kind === 'video'),
+    )
+    .map((post) => post.shortcode!);
+}
+
+/**
+ * 끝내 <video>가 그려지지 않은 게시물의 미디어를 페이지 JSON의 영상 주소로 채운다.
+ *
+ * 화면의 이미지에는 영상 썸네일과 진짜 사진이 섞여 있을 수 있다. 여러 장짜리 게시물은 JSON의 장별 종류와
+ * 화면 이미지 수가 같으면 순서대로 짝지어, 영상 자리는 그 썸네일을 미리보기로 쓰는 영상으로 바꾸고 사진은 그대로 둔다.
+ * 단일 영상이거나 수가 맞지 않으면(짝을 확신할 수 없음) 영상만 남기고 첫 이미지를 미리보기로 쓴다.
+ */
+export function fillVideosFromPageData(
+  raw: RawDomResult,
+  urlsByCode: Map<string, string[]>,
+  codes: Iterable<string>,
+  carouselKinds: Map<string, CarouselItemKind[]> = new Map(),
+): void {
+  const targets = new Set(codes);
+  for (const post of raw.posts) {
+    if (!post.shortcode || !targets.has(post.shortcode)) continue;
+    const urls = urlsByCode.get(post.shortcode) ?? [];
+    if (urls.length === 0) continue;
+    const images = post.media.filter((media) => media.kind === 'image');
+    const preview = (image: RawDomMedia | undefined) => (image ? image.previewUrl ?? image.url : undefined);
+
+    const kinds = carouselKinds.get(post.shortcode);
+    if (kinds && kinds.length === images.length && kinds.filter((kind) => kind === 'video').length === urls.length) {
+      let videoIndex = 0;
+      post.media = kinds.map((kind, index) =>
+        kind === 'video' ? { kind: 'video', url: urls[videoIndex++]!, previewUrl: preview(images[index]) } : images[index]!,
+      );
+      continue;
+    }
+
+    const previewUrl = preview(images[0]);
+    post.media = urls.map((url) => ({ kind: 'video', url, previewUrl }));
+  }
 }
