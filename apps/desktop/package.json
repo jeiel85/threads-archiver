@@ -1,7 +1,7 @@
 {
   "name": "@threads-archiver/desktop",
   "private": true,
-  "version": "0.10.1",
+  "version": "0.10.2",
   "type": "module",
   "scripts": {
     "predev": "npm run build --workspace @threads-archiver/core",
