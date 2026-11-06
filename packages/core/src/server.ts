@@ -9,7 +9,7 @@ import { ThreadsSession, waitForLogin } from './extract/session.js';
 import { saveArchive, defaultBaseDir, defaultFolderName, resolveArchiveDir } from './download.js';
 import { finishedIds, loadHistory, postSummary, savedSummary, saveHistory, trimHistory, type EngineJob } from './history.js';
 import { defaultProfileDir } from './paths.js';
-import { mediaContentType, parseByteRange, readSavedArchive, savedMediaPath } from './saved.js';
+import { findSavedArchive, mediaContentType, parseByteRange, readSavedArchive, savedMediaPath } from './saved.js';
 import { ArchiveError, type DownloadProgress, type ThreadArchive } from './types.js';
 
 /**
@@ -174,24 +174,31 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   }
 }
 
-function enqueue(job: Job): void {
+/** force: 이미 저장된 게시물이어도 다시 받는다 (다시 받기). */
+function enqueue(job: Job, force = false): void {
   job.status = 'queued';
   job.message = '대기 중…';
   persistHistory();
   const attempt = (attempts.get(job.id) ?? 0) + 1;
   attempts.set(job.id, attempt);
   queue = queue
-    .then(() => (attempts.get(job.id) === attempt ? runJob(job) : undefined))
+    .then(() => (attempts.get(job.id) === attempt ? runJob(job, force) : undefined))
     .catch(() => undefined);
 }
 
-async function runJob(job: Job): Promise<void> {
+async function runJob(job: Job, force: boolean): Promise<void> {
   if (job.status === 'cancelled') return;
 
   job.status = 'running';
-  job.message = 'Threads 페이지를 여는 중…';
+  // 저장 폴더를 찾는 동안에도 취소할 수 있게 먼저 등록한다.
   const controller = new AbortController();
   abortControllers.set(job.id, controller);
+  if (!force && (await finishIfSaved(job, controller.signal))) {
+    abortControllers.delete(job.id);
+    return;
+  }
+
+  job.message = 'Threads 페이지를 여는 중…';
 
   const onProgress = (progress: DownloadProgress) => {
     job.progress = progress.ratio;
@@ -252,6 +259,35 @@ async function runJob(job: Job): Promise<void> {
   }
 }
 
+/**
+ * 같은 게시물을 이미 다 저장해 두었으면 브라우저를 열지 않고 그 폴더로 바로 끝낸다.
+ * 폴더를 찾다가 실패하면(권한 등) 평소처럼 페이지를 읽어 받는다. 찾는 동안 취소했으면 취소로 끝낸다(true).
+ */
+async function finishIfSaved(job: Job, signal: AbortSignal): Promise<boolean> {
+  job.message = '이미 저장했는지 확인하는 중…';
+  const result = await findSavedArchive(job.baseDir ?? defaultBaseDir(), job.url).catch(() => undefined);
+  if (signal.aborted) {
+    job.status = 'cancelled';
+    job.message = '취소되었습니다.';
+    job.finishedAt = Date.now();
+    persistHistory();
+    return true;
+  }
+  if (!result) return false;
+
+  job.post = postSummary(result.archive);
+  job.result = result;
+  job.saved = savedSummary(result);
+  job.alreadySaved = true;
+  job.skipped = true;
+  job.status = 'done';
+  job.progress = 1;
+  job.message = `이미 저장된 게시물입니다: ${result.outputDir}`;
+  job.finishedAt = Date.now();
+  persistHistory();
+  return true;
+}
+
 /** 끝난 작업을 같은 항목으로 다시 받는다. 목록에서 맨 위로 올라온다. */
 function retry(job: Job): void {
   job.progress = 0;
@@ -260,7 +296,8 @@ function retry(job: Job): void {
   delete job.result;
   delete job.error;
   delete job.alreadySaved;
-  enqueue(job);
+  delete job.skipped;
+  enqueue(job, true);
 }
 
 /**

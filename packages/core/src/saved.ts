@@ -1,6 +1,7 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { ArchiveError, type ThreadArchive } from './types.js';
+import { parseThreadsUrl } from './urls.js';
+import { ArchiveError, type ArchiveResult, type DownloadedFile, type ThreadArchive } from './types.js';
 
 /**
  * 이미 저장한 게시물 폴더를 다시 읽는다 (내역 미리보기용).
@@ -41,6 +42,67 @@ export async function readSavedArchive(outputDir: string): Promise<ThreadArchive
     throw new ArchiveError('EXTRACTION_FAILED', '저장된 게시물 정보(post.json)를 해석하지 못했습니다.');
   }
   return archive as ThreadArchive;
+}
+
+/** 한 번에 열어 볼 post.json 수. 폴더가 많아도 파일 핸들을 한꺼번에 다 쓰지 않게 한다. */
+const SCAN_BATCH = 32;
+
+/**
+ * 링크의 게시물을 `baseDir` 아래에 이미 다 저장해 두었으면 그 결과를 돌려준다. 브라우저를 열지 않는다.
+ *
+ * 게시물 폴더 이름은 본문·작성일로 정해져 링크만으로는 알 수 없으므로, 하위 폴더의 post.json을 읽어
+ * 첫 게시물 코드가 같은 것을 찾는다(resolveArchiveDir가 같은 폴더를 재사용하는 기준과 같다).
+ * 미디어 파일이 하나라도 없거나 미디어 없이 저장한 폴더는 다 받지 않은 것으로 보고 undefined.
+ * 단축 공유 링크처럼 게시물 코드를 바로 알 수 없는 링크도 undefined (평소처럼 페이지를 읽는다).
+ */
+export async function findSavedArchive(baseDir: string, input: string): Promise<ArchiveResult | undefined> {
+  let shortcode: string;
+  try {
+    shortcode = parseThreadsUrl(input).shortcode;
+  } catch {
+    return undefined;
+  }
+
+  const entries = await readdir(baseDir, { withFileTypes: true }).catch(() => []);
+  const dirs = entries.filter((entry) => entry.isDirectory()).map((entry) => path.resolve(baseDir, entry.name));
+
+  for (let start = 0; start < dirs.length; start += SCAN_BATCH) {
+    const batch = dirs.slice(start, start + SCAN_BATCH);
+    const found = await Promise.all(batch.map((dir) => completeArchive(dir, shortcode)));
+    const hit = found.find((result) => result !== undefined);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+async function completeArchive(outputDir: string, shortcode: string): Promise<ArchiveResult | undefined> {
+  const manifestPath = path.join(outputDir, 'post.json');
+  let archive: ThreadArchive;
+  try {
+    archive = JSON.parse(await readFile(manifestPath, 'utf8')) as ThreadArchive;
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(archive?.posts) || archive.posts[0]?.shortcode !== shortcode) return undefined;
+
+  const files: DownloadedFile[] = [];
+  for (const post of archive.posts) {
+    for (const asset of post.media ?? []) {
+      const file = asset.fileName ? savedMediaPath(outputDir, asset.fileName) : undefined;
+      const info = file ? await stat(file).catch(() => undefined) : undefined;
+      if (!file || !info?.isFile()) return undefined;
+      // 다시 받다가 끊기면 예전 post.json은 남고 파일만 잘려 있을 수 있다. 적어 둔 크기와 다르면 다 받지 않은 것으로 본다.
+      if (typeof asset.bytes === 'number' && asset.bytes !== info.size) return undefined;
+      files.push({ postShortcode: post.shortcode, kind: asset.kind, path: file, bytes: info.size });
+    }
+  }
+
+  const markdown = path.join(outputDir, 'post.md');
+  const markdownPath = (await stat(markdown).catch(() => undefined))?.isFile() ? markdown : undefined;
+  if (markdownPath) files.push({ postShortcode: shortcode, kind: 'metadata', path: markdownPath, bytes: 0 });
+  files.push({ postShortcode: shortcode, kind: 'metadata', path: manifestPath, bytes: 0 });
+
+  return { archive, outputDir, files, manifestPath, markdownPath };
 }
 
 /**
