@@ -205,11 +205,26 @@ export function extractThreadsDom(): RawDomResult {
     return chunks.join('\n').trim();
   };
 
+  /**
+   * 게시물에 붙인 음악은 "Play music" 버튼 안의 숨은 <video>(display:none, 화면 크기 0)로 재생된다.
+   * 게시물 영상이 아니므로 세지 않는다. 세면 영상 순서가 밀리고, 로그인 상태에선 blob 주소라
+   * 페이지 JSON에 짝이 없어 "영상의 원본 주소를 찾지 못했습니다"로 실패한다.
+   */
+  const musicLabel = /music|음악/i;
+  const isMusicPlayer = (video: any, container: any): boolean => {
+    for (let el = video.parentElement; el && el !== container; el = el.parentElement) {
+      if (musicLabel.test(String(el.getAttribute('aria-label') ?? ''))) return true;
+    }
+    // 버튼 문구가 바뀌어도 걸러지도록: 화면에 그려지지 않고 영상 트랙도 없는(소리만 있는) <video>
+    const hidden = typeof video.getClientRects === 'function' && video.getClientRects().length === 0;
+    return hidden && video.readyState >= 1 && !video.videoWidth;
+  };
+
   const collectMedia = (container: any): RawDomMedia[] => {
     const media: RawDomMedia[] = [];
 
     const videos: any[] = Array.from(container.querySelectorAll('video')).filter(
-      (video: any) => !isInsideNestedPost(video, container),
+      (video: any) => !isInsideNestedPost(video, container) && !isMusicPlayer(video, container),
     );
     // 영상의 대표 이미지: poster 속성, 없으면 같은 게시물 안의 썸네일 <picture>.
     const posterImages: any[] = Array.from(container.querySelectorAll('picture img')).filter((img: any) => {
