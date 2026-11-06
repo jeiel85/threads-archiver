@@ -162,13 +162,16 @@ export class EngineClient {
   }
 
   /** 저장을 마친 작업의 post.json을 다시 읽는다 (내역 미리보기). */
-  savedArchive(id: string): Promise<{ archive: ThreadArchive; outputDir: string }> {
+  savedArchive(id: string): Promise<{ archive: ThreadArchive; outputDir: string; mediaKey: string }> {
     return this.request(`/api/jobs/${id}/archive`);
   }
 
-  /** 저장된 미디어 파일 주소. <img>·<video>가 헤더를 못 붙이므로 토큰을 쿼리로 넘긴다. */
-  savedMediaUrl(id: string, fileName: string): string {
-    return `${this.base}/api/jobs/${id}/media/${encodeURIComponent(fileName)}?token=${encodeURIComponent(this.token)}`;
+  /**
+   * 저장된 미디어 파일 주소. <img>·<video>가 헤더를 못 붙이므로 쿼리로 인증하되, 엔진 토큰 대신
+   * savedArchive가 준 그 작업 전용 키(그 작업의 미디어 읽기만 가능)를 싣는다.
+   */
+  savedMediaUrl(id: string, fileName: string, mediaKey: string): string {
+    return `${this.base}/api/jobs/${id}/media/${encodeURIComponent(fileName)}?key=${encodeURIComponent(mediaKey)}`;
   }
 
   cancel(id: string): Promise<unknown> {
