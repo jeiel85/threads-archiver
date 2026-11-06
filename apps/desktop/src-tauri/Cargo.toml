@@ -1,6 +1,6 @@
 [package]
 name = "threads-archiver-desktop"
-version = "0.10.2"
+version = "0.10.3"
 description = "Threads 게시물을 내 컴퓨터에 아카이빙하는 데스크톱 앱"
 authors = ["jeiel85"]
 edition = "2024"
