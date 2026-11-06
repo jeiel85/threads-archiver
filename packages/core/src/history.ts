@@ -31,6 +31,8 @@ export interface EngineJob {
   result?: ArchiveResult;
   /** 같은 게시물을 이미 저장한 폴더가 있어 그 폴더에 다시 저장했는지 */
   alreadySaved?: boolean;
+  /** 이미 다 저장된 게시물이라 페이지를 읽지도, 미디어를 받지도 않고 끝냈는지 */
+  skipped?: boolean;
   error?: { code: string; message: string; hint?: string };
 }
 

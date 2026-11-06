@@ -52,6 +52,8 @@ export default function App() {
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<UiError | null>(null);
+  /** 같은 작업을 다시 받을 때 진행 확인을 새로 시작하게 한다 (작업 id는 그대로). */
+  const [pollRound, setPollRound] = useState(0);
   const [tab, setTab] = useState<Tab>('download');
   /** 내역 탭 배지: 받는 중·대기 중인 작업 수 */
   const [activeCount, setActiveCount] = useState(0);
@@ -127,7 +129,7 @@ export default function App() {
       stopped = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [client, job?.id]);
+  }, [client, job?.id, pollRound]);
 
   // 창을 트레이로 내려도 진행을 볼 수 있게 트레이 툴팁에 알린다.
   const downloadingJob = phase === 'downloading' ? job : null;
@@ -172,6 +174,21 @@ export default function App() {
       setError(toUiError(cause));
     }
   }, [client, outputDir, preview]);
+
+  /** 이미 저장돼 있어 건너뛴 게시물을 같은 폴더에 새로 받는다. */
+  const handleRedownload = useCallback(async () => {
+    const id = jobId.current;
+    if (!client || !id) return;
+    setError(null);
+    setPhase('downloading');
+    try {
+      setJob(await client.retry(id));
+      setPollRound((round) => round + 1);
+    } catch (cause) {
+      setPhase('done');
+      setError(toUiError(cause));
+    }
+  }, [client]);
 
   const handlePickFolder = useCallback(async () => {
     const selected = await openDialog({ directory: true, multiple: false, title: '저장 폴더 선택' });
@@ -345,7 +362,7 @@ export default function App() {
             <div className="result-head">
               <span className="check" aria-hidden="true">✓</span>
               <div>
-                <strong>저장 완료</strong>
+                <strong>{job?.skipped ? '이미 저장된 게시물이에요' : '저장 완료'}</strong>
                 <p className="mono path">{result.outputDir}</p>
               </div>
             </div>
@@ -361,6 +378,11 @@ export default function App() {
               <button type="button" className="ghost" onClick={() => void openArchiveItem(result.manifestPath)}>
                 post.json 열기
               </button>
+              {job?.skipped ? (
+                <button type="button" className="ghost" title="같은 폴더에 새로 받아 덮어써요" onClick={() => void handleRedownload()}>
+                  다시 받기
+                </button>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -643,7 +665,7 @@ function historyStatus(job: Job): string {
     case 'running':
       return [job.message, transferText(job), percentText(job)].filter(Boolean).join(' · ');
     case 'done':
-      return [time, '저장 완료', job.saved ? `미디어 ${job.saved.mediaCount}개` : ''].filter(Boolean).join(' · ');
+      return [time, job.skipped ? '이미 저장됨' : '저장 완료', job.saved ? `미디어 ${job.saved.mediaCount}개` : ''].filter(Boolean).join(' · ');
     case 'cancelled':
       return [time, '취소됨'].filter(Boolean).join(' · ');
     default:

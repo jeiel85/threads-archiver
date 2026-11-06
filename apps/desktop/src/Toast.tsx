@@ -353,7 +353,11 @@ function SingleResult({
       <>
         <div className="toast-title">
           <span className="toast-check">✓</span>
-          {job.alreadySaved ? '이미 저장된 게시물이라 같은 폴더에 다시 저장했어요' : '저장 완료'}
+          {job.skipped
+            ? '이미 저장된 게시물이에요'
+            : job.alreadySaved
+              ? '이미 저장된 게시물이라 같은 폴더에 다시 저장했어요'
+              : '저장 완료'}
         </div>
         <div className="toast-url mono" title={outputDir}>
           {folderName(outputDir)}
@@ -362,9 +366,15 @@ function SingleResult({
           <button type="button" className="secondary" onClick={() => void onOpenFolder(outputDir)}>
             폴더 열기
           </button>
-          <button type="button" className="ghost" onClick={() => onOpenApp('history')}>
-            앱 열기
-          </button>
+          {job.skipped ? (
+            <button type="button" className="ghost" title="같은 폴더에 새로 받아 덮어써요" onClick={() => void onRetry(job)}>
+              다시 받기
+            </button>
+          ) : (
+            <button type="button" className="ghost" onClick={() => onOpenApp('history')}>
+              앱 열기
+            </button>
+          )}
         </div>
       </>
     );
@@ -395,7 +405,9 @@ function SingleResult({
 function summaryText(finished: Job[]): string {
   const done = finished.filter((job) => job.status === 'done').length;
   const failed = finished.length - done;
-  return failed ? `${done}건 저장 · ${failed}건 실패` : `${done}건 모두 저장 완료`;
+  const skipped = finished.filter((job) => job.status === 'done' && job.skipped).length;
+  const parts = [`${done}건 저장`, skipped ? `(이미 저장됨 ${skipped}건)` : '', failed ? `· ${failed}건 실패` : ''];
+  return failed || skipped ? parts.filter(Boolean).join(' ') : `${done}건 모두 저장 완료`;
 }
 
 function jobLabel(job: Job): string {
