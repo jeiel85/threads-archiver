@@ -110,4 +110,20 @@ describe('게시물 DOM 추출', () => {
       ['video', 'https://cdn.example/v.mp4', 'https://cdn.example/thumb.jpg'],
     ]);
   });
+
+  it('아직 주소가 없는 영상의 썸네일은 지우지 않고 이미지로 남긴다', async () => {
+    const raw = await extract(
+      post(`
+        <div class="row">
+          <div><picture><img src="https://cdn.example/photo.jpg"></picture></div>
+          <div><img src="https://cdn.example/thumb-1.jpg"><video></video></div>
+        </div>
+      `),
+    );
+
+    expect(raw.posts[0]!.media.map((media) => [media.kind, media.url])).toEqual([
+      ['image', 'https://cdn.example/photo.jpg'],
+      ['image', 'https://cdn.example/thumb-1.jpg'],
+    ]);
+  });
 });

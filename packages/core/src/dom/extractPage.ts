@@ -239,8 +239,11 @@ export function extractThreadsDom(): RawDomResult {
      * 영상의 썸네일: 그 영상 하나와 이미지 하나만 담은 가장 가까운 조상(여러 장짜리의 한 장) 안의 이미지.
      * 사진과 영상이 섞인 여러 장짜리에서는 사진이 다른 장에 있으므로 썸네일로 잡히지 않는다.
      */
+    const videoSrc = (video: any): string => video.currentSrc || video.src || video.querySelector('source')?.src || '';
     const thumbnails = new Map<any, any>();
     for (const video of videos) {
+      // 아직 주소가 없는 영상은 내보내지 않으므로, 그 썸네일은 이미지로 남겨 장 수를 맞춘다.
+      if (!videoSrc(video)) continue;
       for (let el = video.parentElement; el && el !== container; el = el.parentElement) {
         const inside = images.filter((img: any) => el.contains(img));
         if (inside.length > 1 || videos.some((other: any) => other !== video && el.contains(other))) break;
@@ -253,7 +256,7 @@ export function extractThreadsDom(): RawDomResult {
     const thumbnailSet = new Set(thumbnails.values());
 
     const videoMedia = (video: any): RawDomMedia | undefined => {
-      const src: string = video.currentSrc || video.src || video.querySelector('source')?.src || '';
+      const src = videoSrc(video);
       if (!src) return undefined;
       const thumbnail = thumbnails.get(video);
       const poster: string | undefined =
