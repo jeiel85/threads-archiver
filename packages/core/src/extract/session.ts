@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import process from 'node:process';
 import { ArchiveError, type ThreadArchive, type ThreadsPost } from '../types.js';
 import { extractThreadsDom, type RawDomResult } from '../dom/extractPage.js';
-import { carouselKindsByCode, fillVideosFromPageData, postsMissingVideos, resolveBlobVideos, videoUrlsByCode } from '../dom/pageData.js';
+import { carouselKindsByCode, fillVideosFromPageData, alignCarouselMedia, postsMissingVideos, resolveBlobVideos, videoUrlsByCode } from '../dom/pageData.js';
 import { parseThreadsUrl, isShortShareLink, type ParsedThreadsUrl } from '../urls.js';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
@@ -373,6 +373,8 @@ const VIDEO_RENDER_POLL_MS = 500;
  *
  * - 페이지 JSON에는 영상이 있는데 화면에 <video>가 아직 없으면(첫 실행처럼 느릴 때) 잠시 다시 읽으며 기다린다.
  *   끝내 그려지지 않으면 썸네일을 이미지로 저장하는 대신 JSON의 영상 주소로 채운다.
+ * - 영상이 든 여러 장짜리는 JSON의 장별 구성에 맞춰 섞인 사진을 남기고, 로그인 상태에서 아직 그려지지 않은
+ *   장의 영상도 JSON 주소로 채운다(구성이 맞지 않으면 보이는 영상만).
  * - 로그인 상태에서 blob: 으로만 보이는 영상은 JSON의 원본 mp4 주소로 바꾼다. 못 바꾼 것은 그대로 둔다.
  */
 async function readPostWithVideos(page: Page, parsed: ParsedThreadsUrl): Promise<RawDomResult> {
@@ -391,7 +393,9 @@ async function readPostWithVideos(page: Page, parsed: ParsedThreadsUrl): Promise
     await page.waitForTimeout(VIDEO_RENDER_POLL_MS);
     raw = (await page.evaluate(extractThreadsDom)) as RawDomResult;
   }
-  fillVideosFromPageData(raw, urlsByCode, missing(), carouselKindsByCode(jsonTexts));
+  const carouselKinds = carouselKindsByCode(jsonTexts);
+  fillVideosFromPageData(raw, urlsByCode, missing(), carouselKinds);
+  alignCarouselMedia(raw, urlsByCode, carouselKinds);
 
   resolveBlobVideos(raw, urlsByCode);
   return raw;

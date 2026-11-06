@@ -63,4 +63,51 @@ describe('게시물 DOM 추출', () => {
       ['image', 'https://cdn.example/photo.jpg'],
     ]);
   });
+
+  it('영상과 같은 장의 이미지는 썸네일(미리보기)로 쓰고, 다른 장의 사진은 이미지로 모은다', async () => {
+    // 실제 화면(@mosseri/post/DdjvqxNAdWd): 첫 장 사진은 <picture>, 영상 장은 썸네일 <img>와 <video>가 한 칸에 겹친다.
+    const raw = await extract(
+      post(`
+        <div class="row">
+          <div><picture><img src="https://cdn.example/photo.jpg" width="640" height="853"></picture></div>
+          <div><img src="https://cdn.example/thumb-1.jpg"><video src="https://cdn.example/v1.mp4"></video></div>
+          <div><img src="https://cdn.example/thumb-2.jpg"><video src="https://cdn.example/v2.mp4"></video></div>
+        </div>
+      `),
+    );
+
+    expect(raw.posts[0]!.media.map((media) => [media.kind, media.url, media.previewUrl])).toEqual([
+      ['image', 'https://cdn.example/photo.jpg', 'https://cdn.example/photo.jpg'],
+      ['video', 'https://cdn.example/v1.mp4', 'https://cdn.example/thumb-1.jpg'],
+      ['video', 'https://cdn.example/v2.mp4', 'https://cdn.example/thumb-2.jpg'],
+    ]);
+  });
+
+  it('로그인 상태에서 아직 <video>가 그려지지 않은 장의 썸네일도 화면 순서대로 내보낸다', async () => {
+    const raw = await extract(
+      post(`
+        <div class="row">
+          <div><picture><img src="https://cdn.example/photo.jpg"></picture></div>
+          <div><img src="https://cdn.example/thumb-1.jpg"><video src="blob:https://www.threads.com/1"></video></div>
+          <div><img src="https://cdn.example/thumb-2.jpg"></div>
+        </div>
+      `),
+    );
+
+    expect(raw.posts[0]!.media.map((media) => [media.kind, media.url])).toEqual([
+      ['image', 'https://cdn.example/photo.jpg'],
+      ['video', 'blob:https://www.threads.com/1'],
+      ['image', 'https://cdn.example/thumb-2.jpg'],
+    ]);
+  });
+
+  it('단일 영상 게시물의 썸네일은 이미지로 저장하지 않는다', async () => {
+    const raw = await extract(
+      post(`<div><div><picture><img src="https://cdn.example/thumb.jpg"></picture></div><video src="https://cdn.example/v.mp4"></video></div>`),
+    );
+
+    expect(raw.posts[0]!.media.map((media) => [media.kind, media.url, media.previewUrl])).toEqual([
+      ['video', 'https://cdn.example/v.mp4', 'https://cdn.example/thumb.jpg'],
+    ]);
+  });
 });
