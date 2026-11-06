@@ -588,14 +588,16 @@ function canPreview(job: Job): boolean {
 /** 내역 항목 미리보기. 저장한 폴더의 post.json과 저장된 미디어 파일로 보여 준다 (다시 받지 않는다). */
 function HistoryPreview({ client, job, scrollOnLoad }: { client: EngineClient; job: Job; scrollOnLoad: boolean }) {
   const [state, setState] = useState<
-    { kind: 'loading' } | { kind: 'ready'; archive: ThreadArchive; outputDir: string } | { kind: 'error'; error: UiError }
+    | { kind: 'loading' }
+    | { kind: 'ready'; archive: ThreadArchive; outputDir: string; mediaKey: string }
+    | { kind: 'error'; error: UiError }
   >({ kind: 'loading' });
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let stopped = false;
     client.savedArchive(job.id).then(
-      ({ archive, outputDir }) => !stopped && setState({ kind: 'ready', archive, outputDir }),
+      ({ archive, outputDir, mediaKey }) => !stopped && setState({ kind: 'ready', archive, outputDir, mediaKey }),
       (cause) => !stopped && setState({ kind: 'error', error: toUiError(cause) }),
     );
     return () => {
@@ -608,9 +610,10 @@ function HistoryPreview({ client, job, scrollOnLoad }: { client: EngineClient; j
     if (scrollOnLoad) ref.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }, [state.kind, scrollOnLoad]);
 
+  const mediaKey = state.kind === 'ready' ? state.mediaKey : undefined;
   const mediaSrc = useCallback(
-    (media: Media) => (media.fileName ? client.savedMediaUrl(job.id, media.fileName) : undefined),
-    [client, job.id],
+    (media: Media) => (media.fileName && mediaKey ? client.savedMediaUrl(job.id, media.fileName, mediaKey) : undefined),
+    [client, job.id, mediaKey],
   );
 
   return (
@@ -1005,7 +1008,15 @@ function MediaThumb({ media, localSrc }: { media: Media; localSrc?: string }) {
         // 저장된 영상은 대표 이미지가 없으므로 첫 장면을 보여 준다.
         <video src={`${localSrc}#t=0.1`} preload="metadata" muted playsInline onError={() => setFailed(true)} />
       ) : (
-        <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+        // 원본 크기 파일이라 화면에 들어올 때만 읽고(lazy), 디코딩은 메인 스레드를 막지 않게 한다(async).
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(true)}
+        />
       )}
       <figcaption>
         {media.kind === 'video' ? '▶ ' : ''}

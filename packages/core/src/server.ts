@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { pipeline } from 'node:stream';
 import { readFile, stat, writeFile } from 'node:fs/promises';
@@ -102,6 +102,32 @@ function setLoggedIn(loggedIn: boolean): void {
   loginStatus.loggedIn = loggedIn;
   loginStatus.checkedAt = Date.now();
   void writeFile(LOGIN_FILE, JSON.stringify({ loggedIn, checkedAt: loginStatus.checkedAt }), 'utf8').catch(() => undefined);
+}
+
+/** 길이가 다르면 바로 거절하고, 같으면 상수 시간으로 비교한다. */
+function sameSecret(given: unknown, expected: string): boolean {
+  if (typeof given !== 'string') return false;
+  const a = Buffer.from(given, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * 작업 하나의 저장된 미디어만 읽을 수 있는 키. <img>·<video>는 헤더를 붙일 수 없어 쿼리로 넘기는데,
+ * 엔진 토큰 대신 이 키를 실어 URL이 로그·개발자 도구에 남아도 그 작업의 미디어 읽기 말고는 할 수 없게 한다.
+ * 엔진 토큰에서 파생하므로 엔진을 다시 켜면(토큰이 바뀌면) 함께 무효가 된다.
+ */
+function mediaKey(jobId: string): string {
+  return createHmac('sha256', TOKEN).update(`media:${jobId}`).digest('hex');
+}
+
+/** 잘못된 퍼센트 인코딩(`%E0%A4%A`)이면 undefined. */
+function decodePathPart(part: string): string | undefined {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return undefined;
+  }
 }
 
 function getSession(): ThreadsSession {
@@ -290,10 +316,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  // <img>·<video>는 헤더를 붙일 수 없으므로 저장된 미디어 파일만 쿼리의 토큰을 받는다.
+  // <img>·<video>는 헤더를 붙일 수 없으므로 저장된 미디어 파일만 쿼리로 그 작업 전용 키(mediaKey)를 받는다.
   const mediaMatch = /^\/api\/jobs\/([a-f0-9]+)\/media\/([^/]+)$/.exec(url.pathname);
-  const token = request.headers['x-engine-token'] ?? (mediaMatch ? url.searchParams.get('token') : undefined);
-  if (token !== TOKEN) {
+  const authorized =
+    sameSecret(request.headers['x-engine-token'], TOKEN) ||
+    (mediaMatch !== null && sameSecret(url.searchParams.get('key'), mediaKey(mediaMatch[1]!)));
+  if (!authorized) {
     sendJson(response, 401, { error: { code: 'UNAUTHORIZED', message: '엔진 토큰이 올바르지 않습니다.' } });
     return;
   }
@@ -365,7 +393,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (mediaMatch && request.method === 'GET') {
-    await sendSavedMedia(request, response, jobs.get(mediaMatch[1]!), decodeURIComponent(mediaMatch[2]!));
+    const fileName = decodePathPart(mediaMatch[2]!);
+    if (fileName === undefined) {
+      sendJson(response, 400, { error: { code: 'BAD_REQUEST', message: '파일 이름을 해석하지 못했습니다.' } });
+      return;
+    }
+    await sendSavedMedia(request, response, jobs.get(mediaMatch[1]!), fileName);
     return;
   }
 
@@ -392,7 +425,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         return;
       }
       const archive = await readSavedArchive(job.saved.outputDir);
-      sendJson(response, 200, { archive, outputDir: job.saved.outputDir });
+      sendJson(response, 200, { archive, outputDir: job.saved.outputDir, mediaKey: mediaKey(job.id) });
       return;
     }
     if (jobMatch[2] === '/delete' && request.method === 'POST') {
@@ -465,7 +498,8 @@ async function sendSavedMedia(
   pipeline(createReadStream(file, { start, end }), response, () => undefined);
 }
 
-const server = createServer((request, response) => {
+/** 통합 테스트가 포트를 알아내고 닫을 수 있게 내보낸다. */
+export const server = createServer((request, response) => {
   handle(request, response).catch((error) => {
     try {
       sendError(response, error instanceof ArchiveError ? 400 : 500, error);
