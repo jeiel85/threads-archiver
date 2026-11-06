@@ -1,6 +1,6 @@
 {
   "name": "@threads-archiver/core",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "description": "Threads 게시물 추출·다운로드 엔진 (브라우저 기반)",
