@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -7,6 +8,7 @@ import { ThreadsSession, waitForLogin } from './extract/session.js';
 import { saveArchive, defaultBaseDir, defaultFolderName, resolveArchiveDir } from './download.js';
 import { finishedIds, loadHistory, postSummary, savedSummary, saveHistory, trimHistory, type EngineJob } from './history.js';
 import { defaultProfileDir } from './paths.js';
+import { mediaContentType, parseByteRange, readSavedArchive, savedMediaPath } from './saved.js';
 import { ArchiveError, type DownloadProgress, type ThreadArchive } from './types.js';
 
 /**
@@ -287,7 +289,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  const token = request.headers['x-engine-token'];
+  // <img>·<video>는 헤더를 붙일 수 없으므로 저장된 미디어 파일만 쿼리의 토큰을 받는다.
+  const mediaMatch = /^\/api\/jobs\/([a-f0-9]+)\/media\/([^/]+)$/.exec(url.pathname);
+  const token = request.headers['x-engine-token'] ?? (mediaMatch ? url.searchParams.get('token') : undefined);
   if (token !== TOKEN) {
     sendJson(response, 401, { error: { code: 'UNAUTHORIZED', message: '엔진 토큰이 올바르지 않습니다.' } });
     return;
@@ -359,7 +363,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  const jobMatch = /^\/api\/jobs\/([a-f0-9]+)(\/cancel|\/retry|\/delete)?$/.exec(url.pathname);
+  if (mediaMatch && request.method === 'GET') {
+    await sendSavedMedia(request, response, jobs.get(mediaMatch[1]!), decodeURIComponent(mediaMatch[2]!));
+    return;
+  }
+
+  const jobMatch = /^\/api\/jobs\/([a-f0-9]+)(\/cancel|\/retry|\/delete|\/archive)?$/.exec(url.pathname);
   if (jobMatch) {
     const job = jobs.get(jobMatch[1]!);
     if (!job) {
@@ -373,6 +382,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }
       retry(job);
       sendJson(response, 200, { job });
+      return;
+    }
+    // 내역 미리보기: 저장한 폴더의 post.json을 다시 읽는다. 미디어는 /media/<파일 이름>으로 받는다.
+    if (jobMatch[2] === '/archive' && request.method === 'GET') {
+      if (job.status !== 'done' || !job.saved) {
+        sendJson(response, 409, { error: { code: 'NOT_SAVED', message: '저장을 마친 항목만 미리 볼 수 있습니다.' } });
+        return;
+      }
+      const archive = await readSavedArchive(job.saved.outputDir);
+      sendJson(response, 200, { archive, outputDir: job.saved.outputDir });
       return;
     }
     if (jobMatch[2] === '/delete' && request.method === 'POST') {
@@ -404,6 +423,46 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   sendJson(response, 404, { error: { code: 'NOT_FOUND', message: '알 수 없는 경로입니다.' } });
+}
+
+/** 저장을 마친 작업 폴더의 미디어 파일 하나를 보낸다. Range 요청을 받아 영상도 앞부분만 읽을 수 있다. */
+async function sendSavedMedia(
+  request: IncomingMessage,
+  response: ServerResponse,
+  job: Job | undefined,
+  fileName: string,
+): Promise<void> {
+  const file = job?.status === 'done' && job.saved ? savedMediaPath(job.saved.outputDir, fileName) : undefined;
+  const info = file ? await stat(file).catch(() => undefined) : undefined;
+  if (!file || !info?.isFile()) {
+    sendJson(response, 404, { error: { code: 'NOT_FOUND', message: '저장된 파일을 찾지 못했습니다.' } });
+    return;
+  }
+
+  const headers = {
+    'content-type': mediaContentType(fileName),
+    'accept-ranges': 'bytes',
+    'cache-control': 'no-store',
+  };
+  const range = parseByteRange(request.headers.range, info.size);
+  if (range === 'invalid') {
+    response.writeHead(416, { ...headers, 'content-range': `bytes */${info.size}` });
+    response.end();
+    return;
+  }
+  const { start, end } = range ?? { start: 0, end: info.size - 1 };
+  response.writeHead(range ? 206 : 200, {
+    ...headers,
+    'content-length': String(Math.max(0, end - start + 1)),
+    ...(range ? { 'content-range': `bytes ${start}-${end}/${info.size}` } : {}),
+  });
+  if (info.size === 0) {
+    response.end();
+    return;
+  }
+  const stream = createReadStream(file, { start, end });
+  stream.on('error', () => response.destroy());
+  stream.pipe(response);
 }
 
 const server = createServer((request, response) => {
