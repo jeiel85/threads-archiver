@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import process from 'node:process';
 import { ArchiveError, type ThreadArchive, type ThreadsPost } from '../types.js';
 import { extractThreadsDom, type RawDomResult } from '../dom/extractPage.js';
-import { fillVideosFromPageData, postsMissingVideos, resolveBlobVideos, videoUrlsByCode } from '../dom/pageData.js';
+import { carouselKindsByCode, fillVideosFromPageData, postsMissingVideos, resolveBlobVideos, videoUrlsByCode } from '../dom/pageData.js';
 import { parseThreadsUrl, isShortShareLink, type ParsedThreadsUrl } from '../urls.js';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
@@ -391,7 +391,7 @@ async function readPostWithVideos(page: Page, parsed: ParsedThreadsUrl): Promise
     await page.waitForTimeout(VIDEO_RENDER_POLL_MS);
     raw = (await page.evaluate(extractThreadsDom)) as RawDomResult;
   }
-  fillVideosFromPageData(raw, urlsByCode, missing());
+  fillVideosFromPageData(raw, urlsByCode, missing(), carouselKindsByCode(jsonTexts));
 
   resolveBlobVideos(raw, urlsByCode);
   return raw;

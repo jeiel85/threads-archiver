@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RawDomResult } from '../src/dom/extractPage.js';
-import { fillVideosFromPageData, postsMissingVideos, resolveBlobVideos, videoUrlsByCode } from '../src/dom/pageData.js';
+import { carouselKindsByCode, fillVideosFromPageData, postsMissingVideos, resolveBlobVideos, videoUrlsByCode } from '../src/dom/pageData.js';
 
 const pageJson = JSON.stringify({
   require: [
@@ -91,7 +91,7 @@ describe('스트리밍 영상 원본 주소 찾기', () => {
     expect(postsMissingVideos(result, map, ['SINGLE', 'CAROUSEL', 'IMAGE_ONLY'])).toEqual(['SINGLE']);
   });
 
-  it('끝내 그려지지 않은 영상은 썸네일 이미지 대신 JSON 영상 주소로 채운다', () => {
+  it('끝내 그려지지 않은 영상은 썸네일 이미지 대신 JSON 영상 주소로 채운다 (장별 짝을 확신할 수 없으면 영상만)', () => {
     const result = raw([
       { shortcode: 'CAROUSEL', videos: [] },
       { shortcode: 'IMAGE_ONLY', videos: [] },
@@ -102,5 +102,33 @@ describe('스트리밍 영상 원본 주소 찾기', () => {
       { kind: 'video', url: 'https://cdn/c-2.mp4', previewUrl: 'https://cdn/thumb.jpg' },
     ]);
     expect(result.posts[1]!.media).toEqual([{ kind: 'image', url: 'https://cdn/thumb.jpg' }]);
+  });
+
+  it('사진과 영상이 섞인 여러 장짜리는 장별 종류로 짝지어 진짜 사진을 남긴다', () => {
+    const kinds = carouselKindsByCode([pageJson]);
+    expect(kinds.get('CAROUSEL')).toEqual(['image', 'video', 'video']);
+    expect(kinds.has('SINGLE')).toBe(false); // 여러 장짜리가 아님
+
+    const result = {
+      posts: [
+        {
+          username: 'a',
+          shortcode: 'CAROUSEL',
+          text: '',
+          media: [
+            { kind: 'image', url: 'https://cdn/photo.jpg' },
+            { kind: 'image', url: 'https://cdn/thumb-1.jpg', previewUrl: 'https://cdn/thumb-1-small.jpg' },
+            { kind: 'image', url: 'https://cdn/thumb-2.jpg' },
+          ],
+        },
+      ],
+      page: {},
+    } as unknown as RawDomResult;
+    fillVideosFromPageData(result, videoUrlsByCode([pageJson]), ['CAROUSEL'], kinds);
+    expect(result.posts[0]!.media).toEqual([
+      { kind: 'image', url: 'https://cdn/photo.jpg' },
+      { kind: 'video', url: 'https://cdn/c-1.mp4', previewUrl: 'https://cdn/thumb-1-small.jpg' },
+      { kind: 'video', url: 'https://cdn/c-2.mp4', previewUrl: 'https://cdn/thumb-2.jpg' },
+    ]);
   });
 });
