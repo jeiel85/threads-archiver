@@ -157,3 +157,45 @@ export function fillVideosFromPageData(
     post.media = urls.map((url) => ({ kind: 'video', url, previewUrl }));
   }
 }
+
+/**
+ * 영상이 보이는 게시물의 미디어를 페이지 JSON의 장별 구성에 맞춘다.
+ *
+ * DOM은 영상 썸네일을 뺀 미디어를 화면 순서대로 내보낸다. 여러 장짜리에서 그 수가 JSON의 장 수와 같으면
+ * 장별로 짝지어, 사진 자리는 사진으로, 영상 자리는 그려진 영상 그대로 두거나(로그인 상태에서 화면 밖 장은
+ * <video> 없이 썸네일만 있다) 썸네일 자리를 JSON 영상 주소로 바꾸고 썸네일을 미리보기로 쓴다.
+ * 그 밖(단일 영상, 수나 종류가 맞지 않음)에는 남은 이미지가 썸네일일 수 있으므로 예전처럼 영상만 남긴다.
+ */
+export function alignCarouselMedia(
+  raw: RawDomResult,
+  urlsByCode: Map<string, string[]>,
+  carouselKinds: Map<string, CarouselItemKind[]>,
+): void {
+  for (const post of raw.posts) {
+    const videos = post.media.filter((media) => media.kind === 'video');
+    if (videos.length === 0) continue;
+
+    const kinds = post.shortcode ? carouselKinds.get(post.shortcode) : undefined;
+    const urls = post.shortcode ? urlsByCode.get(post.shortcode) ?? [] : [];
+    const aligned = kinds && kinds.length === post.media.length ? alignByKinds(post.media, kinds, urls) : undefined;
+    post.media = aligned ?? videos;
+  }
+}
+
+function alignByKinds(media: RawDomMedia[], kinds: CarouselItemKind[], urls: string[]): RawDomMedia[] | undefined {
+  const result: RawDomMedia[] = [];
+  let videoIndex = 0;
+  for (let i = 0; i < kinds.length; i += 1) {
+    const item = media[i]!;
+    if (kinds[i] === 'image') {
+      if (item.kind !== 'image') return undefined;
+      result.push(item);
+      continue;
+    }
+    const url = urls[videoIndex++];
+    if (item.kind === 'video') result.push(item);
+    else if (url) result.push({ kind: 'video', url, previewUrl: item.previewUrl ?? item.url });
+    else return undefined;
+  }
+  return result;
+}

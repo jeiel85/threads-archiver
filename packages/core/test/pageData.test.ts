@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RawDomResult } from '../src/dom/extractPage.js';
-import { carouselKindsByCode, fillVideosFromPageData, postsMissingVideos, resolveBlobVideos, videoUrlsByCode } from '../src/dom/pageData.js';
+import { carouselKindsByCode, fillVideosFromPageData, alignCarouselMedia, postsMissingVideos, resolveBlobVideos, videoUrlsByCode } from '../src/dom/pageData.js';
 
 const pageJson = JSON.stringify({
   require: [
@@ -129,6 +129,59 @@ describe('스트리밍 영상 원본 주소 찾기', () => {
       { kind: 'image', url: 'https://cdn/photo.jpg' },
       { kind: 'video', url: 'https://cdn/c-1.mp4', previewUrl: 'https://cdn/thumb-1-small.jpg' },
       { kind: 'video', url: 'https://cdn/c-2.mp4', previewUrl: 'https://cdn/thumb-2.jpg' },
+    ]);
+  });
+
+  it('영상이 보이는 여러 장짜리는 JSON 장별 구성에 맞춰 사진을 남기고, 그려지지 않은 영상 장을 채운다', () => {
+    const urls = videoUrlsByCode([pageJson]);
+    const kinds = carouselKindsByCode([pageJson]); // CAROUSEL: image, video, video
+    kinds.set('CAROUSEL2', ['image', 'video']);
+    const result = {
+      posts: [
+        // 화면 순서: 사진, 그려진 영상, 아직 썸네일만 있는 영상 장
+        {
+          username: 'a',
+          shortcode: 'CAROUSEL',
+          text: '',
+          media: [
+            { kind: 'image', url: 'https://cdn/photo.jpg' },
+            { kind: 'video', url: 'blob:1' },
+            { kind: 'image', url: 'https://cdn/thumb-2.jpg', previewUrl: 'https://cdn/thumb-2-small.jpg' },
+          ],
+        },
+        // 단일 영상: JSON에 장별 구성이 없으니 남은 이미지는 썸네일일 수 있어 뺀다.
+        { username: 'a', shortcode: 'SINGLE', text: '', media: [{ kind: 'video', url: 'blob:3' }, { kind: 'image', url: 'https://cdn/thumb.jpg' }] },
+        // 수가 맞지 않음(JSON은 2장인데 화면은 3개): 짝을 확신할 수 없어 보이는 영상만.
+        {
+          username: 'a',
+          shortcode: 'CAROUSEL2',
+          text: '',
+          media: [{ kind: 'image', url: 'https://cdn/a.jpg' }, { kind: 'video', url: 'blob:4' }, { kind: 'image', url: 'https://cdn/b.jpg' }],
+        },
+        // 영상이 없는 사진 게시물은 건드리지 않는다.
+        { username: 'a', shortcode: 'IMAGE_ONLY', text: '', media: [{ kind: 'image', url: 'https://cdn/only.jpg' }] },
+      ],
+      page: {},
+    } as unknown as RawDomResult;
+
+    alignCarouselMedia(result, urls, kinds);
+    expect(result.posts[0]!.media).toEqual([
+      { kind: 'image', url: 'https://cdn/photo.jpg' },
+      { kind: 'video', url: 'blob:1' },
+      { kind: 'video', url: 'https://cdn/c-2.mp4', previewUrl: 'https://cdn/thumb-2-small.jpg' },
+    ]);
+    expect(result.posts.slice(1).map((post) => post.media.map((media) => media.url))).toEqual([
+      ['blob:3'],
+      ['blob:4'],
+      ['https://cdn/only.jpg'],
+    ]);
+
+    // 이어지는 blob 치환은 영상 순서로 짝지으므로, 그려진 영상은 첫 번째 영상 주소를 받는다.
+    resolveBlobVideos(result, urls);
+    expect(result.posts[0]!.media.map((media) => media.url)).toEqual([
+      'https://cdn/photo.jpg',
+      'https://cdn/c-1.mp4',
+      'https://cdn/c-2.mp4',
     ]);
   });
 });

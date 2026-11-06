@@ -226,26 +226,46 @@ export function extractThreadsDom(): RawDomResult {
     const videos: any[] = Array.from(container.querySelectorAll('video')).filter(
       (video: any) => !isInsideNestedPost(video, container) && !isMusicPlayer(video, container),
     );
-    // 영상의 대표 이미지: poster 속성, 없으면 같은 게시물 안의 썸네일 <picture>.
-    const posterImages: any[] = Array.from(container.querySelectorAll('picture img')).filter((img: any) => {
+    const images: any[] = Array.from(container.querySelectorAll('img')).filter((img: any) => {
       if (isInsideNestedPost(img, container)) return false;
       if (/profile picture|프로필 사진/i.test(String(img.getAttribute('alt') ?? ''))) return false;
       const anchor = img.closest('a[href]');
-      return !(anchor && isAuthorAnchor(anchor));
+      if (anchor && isAuthorAnchor(anchor)) return false;
+      const width = toNumber(img.getAttribute('width'));
+      return !(width !== undefined && width < 100);
     });
-    let posterIndex = 0;
 
+    /**
+     * 영상의 썸네일: 그 영상 하나와 이미지 하나만 담은 가장 가까운 조상(여러 장짜리의 한 장) 안의 이미지.
+     * 사진과 영상이 섞인 여러 장짜리에서는 사진이 다른 장에 있으므로 썸네일로 잡히지 않는다.
+     */
+    const videoSrc = (video: any): string => video.currentSrc || video.src || video.querySelector('source')?.src || '';
+    const thumbnails = new Map<any, any>();
     for (const video of videos) {
-      const src: string = video.currentSrc || video.src || video.querySelector('source')?.src || '';
-      if (!src) continue;
-      const posterImg = posterImages[posterIndex++];
+      // 아직 주소가 없는 영상은 내보내지 않으므로, 그 썸네일은 이미지로 남겨 장 수를 맞춘다.
+      if (!videoSrc(video)) continue;
+      for (let el = video.parentElement; el && el !== container; el = el.parentElement) {
+        const inside = images.filter((img: any) => el.contains(img));
+        if (inside.length > 1 || videos.some((other: any) => other !== video && el.contains(other))) break;
+        if (inside.length === 1) {
+          thumbnails.set(video, inside[0]);
+          break;
+        }
+      }
+    }
+    const thumbnailSet = new Set(thumbnails.values());
+
+    const videoMedia = (video: any): RawDomMedia | undefined => {
+      const src = videoSrc(video);
+      if (!src) return undefined;
+      const thumbnail = thumbnails.get(video);
       const poster: string | undefined =
         video.poster ||
-        (posterImg
-          ? pickPreviewFromSrcset(posterImg.getAttribute('srcset')) ?? posterImg.currentSrc ?? posterImg.src
+        (thumbnail
+          ? pickPreviewFromSrcset(thumbnail.getAttribute('srcset')) ?? thumbnail.currentSrc ?? thumbnail.src
           : undefined) ||
         undefined;
-      media.push({
+      return {
         previewUrl: poster,
         kind: 'video',
         url: src,
@@ -255,37 +275,32 @@ export function extractThreadsDom(): RawDomResult {
           typeof video.duration === 'number' && Number.isFinite(video.duration) && video.duration > 0
             ? Math.round(video.duration * 1000) / 1000
             : undefined,
-      });
-    }
+      };
+    };
 
-    // 영상 게시물의 썸네일(picture)은 별도 미디어로 저장하지 않는다.
-    if (media.length === 0) {
-      const images: any[] = Array.from(container.querySelectorAll('picture img, img')).filter(
-        (img: any) => !isInsideNestedPost(img, container),
-      );
-      const seen = new Set<string>();
-      for (const img of images) {
-        const alt = String(img.getAttribute('alt') ?? '');
-        if (/profile picture|프로필 사진/i.test(alt)) continue;
-        const anchor = img.closest('a[href]');
-        if (anchor && isAuthorAnchor(anchor)) continue;
+    // 영상의 썸네일은 별도 미디어로 저장하지 않는다. 영상이 있는 게시물에 남은 이미지(섞인 사진이거나,
+    // 로그인 상태에서 아직 <video>가 그려지지 않은 장의 썸네일)는 화면 순서대로 내보내고,
+    // 페이지 JSON의 장별 구성과 맞춰 정리한다(pageData.ts의 alignCarouselMedia).
+    const seen = new Set<string>();
+    const imageMedia = (img: any): RawDomMedia | undefined => {
+      const url = pickLargestFromSrcset(img.getAttribute('srcset')) ?? img.currentSrc ?? img.src;
+      if (!url || seen.has(url)) return undefined;
+      seen.add(url);
+      return {
+        kind: 'image',
+        url,
+        width: toNumber(img.getAttribute('width')),
+        height: toNumber(img.getAttribute('height')),
+        previewUrl: pickPreviewFromSrcset(img.getAttribute('srcset')) ?? url,
+      };
+    };
 
-        const width = toNumber(img.getAttribute('width'));
-        const height = toNumber(img.getAttribute('height'));
-        if (width !== undefined && width < 100) continue;
-
-        const url = pickLargestFromSrcset(img.getAttribute('srcset')) ?? img.currentSrc ?? img.src;
-        if (!url || seen.has(url)) continue;
-        seen.add(url);
-
-        media.push({
-          kind: 'image',
-          url,
-          width,
-          height,
-          previewUrl: pickPreviewFromSrcset(img.getAttribute('srcset')) ?? url,
-        });
-      }
+    const ordered = [...videos, ...images.filter((img: any) => !thumbnailSet.has(img))].sort((a: any, b: any) =>
+      a === b ? 0 : a.compareDocumentPosition(b) & 4 /* DOCUMENT_POSITION_FOLLOWING */ ? -1 : 1,
+    );
+    for (const el of ordered) {
+      const item = el.tagName === 'VIDEO' ? videoMedia(el) : imageMedia(el);
+      if (item) media.push(item);
     }
 
     return media;
